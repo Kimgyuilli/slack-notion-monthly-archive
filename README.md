@@ -108,7 +108,50 @@ Repository variables:
 
 `AUTO_JOIN_PUBLIC_CHANNELS=false`는 **새 채널 자동 참여만 중단**합니다. 봇이 이미 참여한 채널의 읽기 권한까지 제거하려면 해당 Slack 채널에서 앱을 별도로 제거해야 합니다.
 
-포함된 워크플로는 매월 1일 00:17 KST에 지난달을 아카이빙합니다. Actions 화면의 **Run workflow**에서 `YYYY-MM`을 입력하면 특정 월을 수동으로 실행할 수 있습니다.
+포함된 워크플로는 매월 1일 00:17 KST에 지난달을 자동으로 아카이빙합니다.
+
+## 수동 트리거
+
+예약 시간을 기다리지 않고 GitHub 웹 화면이나 로컬 터미널에서 즉시 실행할 수 있습니다.
+
+### GitHub Actions 화면에서 실행
+
+1. 저장소의 **Actions** 탭을 엽니다.
+2. 왼쪽에서 **Archive Slack to Notion** 워크플로를 선택합니다.
+3. **Run workflow** 버튼을 누릅니다.
+4. `month`에 아카이빙할 월을 `YYYY-MM` 형식으로 입력합니다. 예: `2026-08`
+5. **Run workflow**를 눌러 실행하고 같은 화면에서 실행 로그와 결과를 확인합니다.
+
+`month`를 비우면 KST 기준 지난달을 아카이빙합니다. 이미 같은 제목의 채널·월 페이지가 Notion에 있으면 덮어쓰지 않고 건너뛰므로 동일한 월을 다시 실행해도 기존 페이지는 보존됩니다.
+
+GitHub CLI를 사용한다면 다음과 같이 실행할 수도 있습니다.
+
+```bash
+gh workflow run archive.yml --repo Kimgyuilli/slack-notion-monthly-archive -f month=2026-08
+```
+
+지난달을 실행할 때는 `month` 입력을 생략합니다.
+
+```bash
+gh workflow run archive.yml --repo Kimgyuilli/slack-notion-monthly-archive
+```
+
+### 로컬 터미널에서 실행
+
+앞에서 설명한 Slack 및 Notion 환경 변수를 먼저 설정한 다음 실행합니다.
+
+```bash
+# KST 기준 지난달
+python3 archive.py --publish
+
+# 특정 월
+python3 archive.py --month 2026-08 --publish
+
+# 특정 채널만 선택
+python3 archive.py --month 2026-08 --channel general --channel product --publish
+```
+
+`--publish`를 빼면 Slack 데이터는 읽지만 Notion에는 쓰지 않는 미리보기로 실행됩니다.
 
 ## 포함 범위
 
