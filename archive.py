@@ -298,14 +298,9 @@ class SlackClient:
 
     def member_channels(
         self,
-        selected: set[str] | None = None,
         *,
         auto_join_public: bool = False,
     ) -> list[dict[str, Any]]:
-        if auto_join_public and not selected:
-            raise ArchiveError(
-                "AUTO_JOIN_PUBLIC_CHANNELS=true일 때는 안전을 위해 SLACK_CHANNELS를 반드시 지정해야 합니다."
-            )
         cursor = ""
         channels: list[dict[str, Any]] = []
         while True:
@@ -317,8 +312,6 @@ class SlackClient:
                 cursor=cursor,
             )
             for channel in result.get("channels", []):
-                if selected and channel.get("id") not in selected and channel.get("name") not in selected:
-                    continue
                 if not channel.get("is_member"):
                     if not auto_join_public or channel.get("is_private"):
                         continue
@@ -937,15 +930,6 @@ def mock_archive(window: MonthWindow) -> tuple[list[dict[str, Any]], dict[str, s
     return channels, {"U01MIN": "민수", "U02SEO": "서연", "U03KIM": "김PM"}
 
 
-def selected_channels(cli_channels: list[str] | None) -> set[str] | None:
-    values = cli_channels or []
-    env_value = os.getenv("SLACK_CHANNELS", "")
-    if env_value:
-        values.extend(part.strip().lstrip("#") for part in env_value.split(",") if part.strip())
-    cleaned = {value.strip().lstrip("#") for value in values if value.strip()}
-    return cleaned or None
-
-
 def environment_flag(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None or not value.strip():
@@ -975,11 +959,9 @@ def run(args: argparse.Namespace) -> int:
         if not workspace_url and identity.get("url"):
             workspace_url = identity["url"]
         users = slack.users()
-        selected = selected_channels(args.channel)
         auto_join_public = environment_flag("AUTO_JOIN_PUBLIC_CHANNELS")
         channels = []
         for channel in slack.member_channels(
-            selected,
             auto_join_public=auto_join_public,
         ):
             channel = dict(channel)
@@ -1065,9 +1047,6 @@ def run(args: argparse.Namespace) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--month", help="아카이빙할 KST 기준 월(YYYY-MM). 기본값은 지난달")
-    parser.add_argument(
-        "--channel", action="append", help="대상 채널 이름 또는 ID. 여러 번 지정 가능"
-    )
     parser.add_argument("--mock", action="store_true", help="Slack 없이 샘플 데이터로 미리보기")
     parser.add_argument("--publish", action="store_true", help="Notion에 실제 페이지 생성")
     parser.add_argument(

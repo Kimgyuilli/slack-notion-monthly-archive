@@ -28,7 +28,7 @@ users:read
 files:read
 ```
 
-선택한 공개 채널에 자동으로 참여하게 하려면 다음 권한도 추가합니다.
+모든 공개 채널에 자동으로 참여하게 하려면 다음 권한도 추가합니다.
 
 ```text
 channels:join
@@ -41,7 +41,7 @@ groups:read
 groups:history
 ```
 
-앱을 워크스페이스에 설치한 뒤 아카이빙할 각 채널에서 `/invite @앱이름`으로 초대합니다. 이 데모는 권한을 최소화하기 위해 봇이 실제 멤버인 채널만 읽으며, 모든 공개 채널에 자동으로 참여하지 않습니다.
+앱을 워크스페이스에 설치한 뒤 아카이빙할 각 채널에서 `/invite @앱이름`으로 초대합니다. 기본 설정에서는 봇이 실제 멤버인 채널만 읽습니다. `AUTO_JOIN_PUBLIC_CHANNELS=true`로 설정하면 봇이 모든 공개 채널에 자동 참여한 뒤 함께 아카이빙합니다.
 
 기존 앱에 `files:read`를 나중에 추가했다면 변경된 권한이 토큰에 반영되도록 앱을 워크스페이스에 다시 설치합니다.
 
@@ -81,12 +81,6 @@ export SLACK_WORKSPACE_URL="https://your-workspace.slack.com"
 python3 archive.py --month 2026-08
 ```
 
-특정 채널만 선택할 수도 있습니다.
-
-```bash
-python3 archive.py --month 2026-08 --channel general --channel product
-```
-
 이 단계에서는 Slack을 읽지만 Notion에는 아무것도 쓰지 않습니다.
 
 ### 4. Notion에 게시
@@ -106,16 +100,20 @@ Repository secrets:
 
 - `SLACK_BOT_TOKEN`
 - `NOTION_TOKEN`
-- `AUTO_JOIN_PUBLIC_CHANNELS`: 선택 사항. `true`일 때만 `SLACK_CHANNELS`에 지정한 공개 채널에 자동 참여하며, 기본값은 `false`
+- `AUTO_JOIN_PUBLIC_CHANNELS`: 선택 사항. 기본값은 `false`. 아래의 채널 접근 로직을 제어
 
 Repository variables:
 
 - `SLACK_WORKSPACE_URL`: `https://your-workspace.slack.com`
-- `SLACK_CHANNELS`: 선택 사항. `general,product,engineering` 형식이며 비어 있으면 봇이 참여한 모든 채널
 - `MAX_IMAGE_MB`: 선택 사항. 이미지 하나의 최대 다운로드 크기이며 기본값은 `200`, 최대 `5120`
 - `NOTION_DATA_SOURCE_ID`: 아카이빙 DB의 데이터 소스 ID
 
-자동 참여를 사용하려면 `AUTO_JOIN_PUBLIC_CHANNELS` Secret을 `true`로 설정하고 `SLACK_CHANNELS` Variable에 대상 채널 이름이나 ID를 반드시 입력합니다. 채널 목록 없이 자동 참여를 켜면 모든 공개 채널에 실수로 가입하는 것을 막기 위해 실행이 중단됩니다. `channels:join` 권한을 추가한 뒤에는 Slack 앱을 워크스페이스에 다시 설치해야 합니다.
+채널 접근 로직은 다음 두 가지뿐입니다.
+
+- `false`: 봇이 초대되어 현재 멤버인 공개·비공개 채널만 조회
+- `true`: 위 채널에 더해 워크스페이스의 모든 공개 채널에 자동 참여하고 조회
+
+`true`를 사용하려면 Slack 앱에 `channels:join` 권한을 추가하고 앱을 워크스페이스에 다시 설치해야 합니다. 비공개 채널은 `true`여도 자동 참여할 수 없으므로 봇을 직접 초대해야 합니다.
 
 `AUTO_JOIN_PUBLIC_CHANNELS=false`는 **새 채널 자동 참여만 중단**합니다. 봇이 이미 참여한 채널의 읽기 권한까지 제거하려면 해당 Slack 채널에서 앱을 별도로 제거해야 합니다.
 
@@ -158,8 +156,6 @@ python3 archive.py --publish
 # 특정 월
 python3 archive.py --month 2026-08 --publish
 
-# 특정 채널만 선택
-python3 archive.py --month 2026-08 --channel general --channel product --publish
 ```
 
 `--publish`를 빼면 Slack 데이터는 읽지만 Notion에는 쓰지 않는 미리보기로 실행됩니다.

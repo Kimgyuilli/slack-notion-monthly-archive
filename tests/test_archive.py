@@ -178,22 +178,48 @@ class ArchiveTests(unittest.TestCase):
             with self.assertRaises(archive.ArchiveError):
                 archive.environment_flag("AUTO_JOIN_PUBLIC_CHANNELS")
 
-    def test_auto_join_only_selected_public_channels(self):
+    def test_auto_join_all_public_channels_and_keeps_member_private_channels(self):
         fake = FakeSlackHttp()
         slack = archive.SlackClient("token", http=fake)
-        channels = slack.member_channels({"product"}, auto_join_public=True)
-        self.assertEqual([channel["id"] for channel in channels], ["C_JOIN"])
+        channels = slack.member_channels(auto_join_public=True)
+        self.assertEqual([channel["id"] for channel in channels], ["C_JOIN", "C_SKIP"])
         join_calls = [
             (http_method, params)
             for http_method, slack_method, params in fake.calls
             if slack_method == "conversations.join"
         ]
-        self.assertEqual(join_calls, [("POST", {"channel": "C_JOIN"})])
+        self.assertEqual(
+            join_calls,
+            [
+                ("POST", {"channel": "C_JOIN"}),
+                ("POST", {"channel": "C_SKIP"}),
+            ],
+        )
 
-    def test_auto_join_requires_channel_allowlist(self):
-        slack = archive.SlackClient("token", http=FakeSlackHttp())
-        with self.assertRaises(archive.ArchiveError):
-            slack.member_channels(None, auto_join_public=True)
+    def test_auto_join_false_only_returns_member_channels(self):
+        fake = FakeSlackHttp()
+        fake_channel_list = fake.request
+
+        def request(method, url, **kwargs):
+            if url.endswith("/conversations.list"):
+                return {
+                    "ok": True,
+                    "channels": [
+                        {"id": "C_MEMBER", "name": "general", "is_member": True, "is_private": False},
+                        {"id": "C_PUBLIC", "name": "random", "is_member": False, "is_private": False},
+                        {"id": "G_MEMBER", "name": "leaders", "is_member": True, "is_private": True},
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            return fake_channel_list(method, url, **kwargs)
+
+        fake.request = request
+        slack = archive.SlackClient("token", http=fake)
+        channels = slack.member_channels(auto_join_public=False)
+        self.assertEqual([channel["id"] for channel in channels], ["C_MEMBER", "G_MEMBER"])
+        self.assertFalse(
+            any(slack_method == "conversations.join" for _, slack_method, _ in fake.calls)
+        )
 
     def test_notion_database_schema_is_validated(self):
         notion = archive.NotionClient("token", "DATA_SOURCE", http=FakeNotionDatabaseHttp())
