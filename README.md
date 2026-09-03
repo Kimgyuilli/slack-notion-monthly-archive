@@ -2,7 +2,21 @@
 
 Slack의 월별 메시지와 이미지를 채널별로 Notion 데이터베이스에 보관하는 자동화 도구입니다. 매월 GitHub Actions로 실행하거나 필요할 때 수동으로 실행할 수 있습니다.
 
-외부 Python 패키지가 필요하지 않으며 Python 표준 라이브러리만 사용합니다.
+외부 Python 패키지가 필요하지 않으며 Python 표준 라이브러리만 사용합니다. Python 3.9 이상이 필요합니다(`zoneinfo` 사용).
+
+## 구조
+
+```text
+archive.py              CLI 진입점, 실행 흐름, mock 데이터
+app/models.py           MonthWindow, DownloadedFile, 월 계산, Notion DB 스키마 상수
+app/http_client.py      재시도·백오프를 포함한 JSON/multipart HTTP
+app/slack_client.py     채널 탐색, 메시지 조회, 파일 다운로드
+app/notion_client.py    스키마 검증, 파일 업로드, 아카이브 행 생성
+app/renderer.py         Notion 블록과 Markdown 미리보기 생성
+tests/test_archive.py   단위 테스트
+```
+
+Notion DB의 속성 이름과 상태 값은 `app/models.py`에 한 벌만 정의합니다. 미리보기(`renderer`)와 실제 기록(`notion_client`)이 같은 상수를 참조해야 미리보기가 실제와 다른 상태를 표시하지 않습니다.
 
 ## 동작 방식
 
