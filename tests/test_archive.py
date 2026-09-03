@@ -660,6 +660,113 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(downloaded.filename, "a.png")
 
 
+class LayoutTests(unittest.TestCase):
+    """The Notion body's visual structure."""
+
+    def setUp(self):
+        self.window = models.month_window("2026-08")
+        self.channels, self.users = archive.mock_archive(self.window)
+        self.channel = self.channels[0]
+        self.blocks = renderer.archive_blocks(
+            self.channel, self.channel["messages"], self.users,
+            self.window, "https://demo.slack.com",
+        )
+
+    def types(self):
+        return [block["type"] for block in self.blocks]
+
+    def test_table_of_contents_appears_once_after_the_summary(self):
+        self.assertEqual(self.types().count("table_of_contents"), 1)
+        self.assertEqual(self.types()[:2], ["callout", "table_of_contents"])
+
+    def test_one_divider_per_date_not_per_message(self):
+        dates = {
+            renderer.kst_datetime(m["ts"]).date()
+            for m in self.channel["messages"]
+        }
+        self.assertEqual(self.types().count("divider"), len(dates))
+        self.assertEqual(self.types().count("heading_2"), len(dates))
+
+    def test_each_date_heading_is_preceded_by_its_divider(self):
+        types = self.types()
+        for index, kind in enumerate(types):
+            if kind == "heading_2":
+                self.assertEqual(types[index - 1], "divider")
+
+    def test_empty_month_gets_no_contents_or_divider(self):
+        blocks = renderer.archive_blocks(
+            self.channel, [], self.users, self.window, "https://demo.slack.com"
+        )
+        self.assertEqual(
+            [block["type"] for block in blocks], ["callout", "paragraph"]
+        )
+
+    def runs(self, block):
+        return [
+            (
+                run["text"]["content"],
+                run["annotations"].get("bold", False),
+                run["annotations"].get("code", False),
+                run["annotations"].get("color"),
+            )
+            for run in block["paragraph"]["rich_text"]
+        ]
+
+    def test_time_author_and_body_carry_distinct_weights(self):
+        block = renderer.paragraph_block(
+            self.channel["messages"][0], self.users, "C01", "https://demo.slack.com"
+        )
+        time_run, author_run = self.runs(block)[0], self.runs(block)[1]
+        self.assertEqual(time_run[0], "09:14")
+        self.assertEqual((time_run[2], time_run[3]), (True, "gray"))  # code, gray
+        self.assertIn("민수", author_run[0])
+        self.assertTrue(author_run[1])                                # bold
+        body = next(r for r in self.runs(block) if "이번 배포는" in r[0])
+        self.assertEqual((body[1], body[2], body[3]), (False, False, None))
+
+    def test_reply_shows_a_clock_without_the_date(self):
+        reply = self.channel["messages"][0]["_replies"][0]
+        runs = self.runs(
+            renderer.paragraph_block(
+                reply, self.users, "C01", "https://demo.slack.com", reply=True
+            )
+        )
+        self.assertEqual(runs[0][0], "↳ ")
+        self.assertEqual(runs[1][0], "09:20")
+        self.assertNotIn("08-03", "".join(run[0] for run in runs))
+
+    def test_reactions_and_files_are_muted(self):
+        block = renderer.paragraph_block(
+            self.channel["messages"][0], self.users, "C01", "https://demo.slack.com"
+        )
+        details = next(r for r in self.runs(block) if "white_check_mark" in r[0])
+        self.assertEqual(details[3], "gray")
+
+    def test_permalink_stays_a_link(self):
+        block = renderer.paragraph_block(
+            self.channel["messages"][0], self.users, "C01", "https://demo.slack.com"
+        )
+        link = block["paragraph"]["rich_text"][-1]
+        self.assertEqual(link["text"]["content"], "  원문")
+        self.assertIn("demo.slack.com", link["text"]["link"]["url"])
+
+    def test_layout_overhead_is_one_block_per_date_plus_one(self):
+        """Contents + one divider per date; nothing per message."""
+        dates = len({
+            renderer.kst_datetime(m["ts"]).date()
+            for m in self.channel["messages"]
+        })
+        messages = sum(1 + len(m.get("_replies", [])) for m in self.channel["messages"])
+        images = sum(
+            1
+            for m in archive.all_messages(self.channel["messages"])
+            for f in m.get("files", [])
+            if f.get("_notion_upload_id")
+        )
+        expected = 1 + 1 + dates * 2 + messages + images  # callout + TOC + (divider+heading)
+        self.assertEqual(len(self.blocks), expected)
+
+
 class UnfinishedRowTests(unittest.TestCase):
     """A row left mid-write must never be reported as an existing archive."""
 
