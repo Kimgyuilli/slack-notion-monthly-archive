@@ -50,9 +50,21 @@ def message_details(message: dict[str, Any]) -> str:
 def kst_datetime(timestamp: str) -> datetime:
     return datetime.fromtimestamp(float(timestamp), tz=timezone.utc).astimezone(KST)
 
-def rich_text(content: str, *, bold: bool = False, link: str | None = None) -> list[dict[str, Any]]:
+def rich_text(
+    content: str,
+    *,
+    bold: bool = False,
+    code: bool = False,
+    color: str | None = None,
+    link: str | None = None,
+) -> list[dict[str, Any]]:
     if not content:
         return []
+    annotations: dict[str, Any] = {"bold": bold}
+    if code:
+        annotations["code"] = True
+    if color:
+        annotations["color"] = color
     pieces: list[dict[str, Any]] = []
     for index in range(0, len(content), MAX_NOTION_TEXT_LENGTH):
         text: dict[str, Any] = {"content": content[index : index + MAX_NOTION_TEXT_LENGTH]}
@@ -62,7 +74,7 @@ def rich_text(content: str, *, bold: bool = False, link: str | None = None) -> l
             {
                 "type": "text",
                 "text": text,
-                "annotations": {"bold": bold},
+                "annotations": dict(annotations),
             }
         )
     return pieces
@@ -76,17 +88,18 @@ def paragraph_block(
     reply: bool = False,
 ) -> dict[str, Any]:
     sent_at = kst_datetime(message["ts"])
-    prefix = "↳ " if reply else ""
-    display_time = f"{sent_at:%m-%d %H:%M}" if reply else f"{sent_at:%H:%M}"
-    header = f"{prefix}{display_time} {message_author(message, users)}  "
-    body = slack_text(message.get("text") or "(본문 없음)", users)
+    # The date already sits in the heading above, so replies only need a clock.
+    content = rich_text("↳ " if reply else "", color="gray")
+    content += rich_text(f"{sent_at:%H:%M}", code=True, color="gray")
+    content += rich_text(f"  {message_author(message, users)}", bold=True)
+    content += rich_text("  ·  ", color="gray")
+    content += rich_text(slack_text(message.get("text") or "(본문 없음)", users))
     details = message_details(message)
     if details:
-        body += f"\n{details}"
-    content = rich_text(header, bold=True) + rich_text(body)
+        content += rich_text(f"\n{details}", color="gray")
     permalink = message_permalink(workspace_url, channel_id, message["ts"])
     if permalink:
-        content += rich_text("  원문", link=permalink)
+        content += rich_text("  원문", color="gray", link=permalink)
     return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": content}}
 
 def image_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -130,11 +143,22 @@ def archive_blocks(
             },
         }
     ]
+    if messages:
+        blocks.append(
+            {
+                "object": "block",
+                "type": "table_of_contents",
+                "table_of_contents": {"color": "gray"},
+            }
+        )
     current_date = None
     for message in messages:
         date = kst_datetime(message["ts"]).date()
         if date != current_date:
             current_date = date
+            # One rule per date, not per message: a divider on every message
+            # would double the block count and the appends that go with it.
+            blocks.append({"object": "block", "type": "divider", "divider": {}})
             blocks.append(
                 {
                     "object": "block",
