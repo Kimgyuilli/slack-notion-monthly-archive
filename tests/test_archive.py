@@ -786,6 +786,9 @@ class UnfinishedRowTests(unittest.TestCase):
     def run_publish(self, status):
         test = self
 
+        fetched: list[str] = []
+        trashed: list[str] = []
+
         class FakeSlack:
             def __init__(self, token):
                 pass
@@ -800,6 +803,7 @@ class UnfinishedRowTests(unittest.TestCase):
                 return [{"id": "C1", "name": "general"}]
 
             def channel_messages(self, channel_id, window):
+                fetched.append(channel_id)
                 return []
 
         class FakeNotion:
@@ -816,6 +820,9 @@ class UnfinishedRowTests(unittest.TestCase):
 
             def exact_entry(self, label, period):
                 return test.row(status)
+
+            def archive_page(self, page_id):
+                trashed.append(page_id)
 
             def create_archive_entry(self, title, label, period, blocks):
                 self.created.append(title)
@@ -835,34 +842,53 @@ class UnfinishedRowTests(unittest.TestCase):
             mock.patch("sys.stderr", stderr),
         ):
             code = archive.run(archive.parse_args(["--publish", "--month", "2026-08"]))
-        return code, stdout.getvalue(), stderr.getvalue()
+        return code, stdout.getvalue(), stderr.getvalue(), fetched, trashed
 
-    def test_completed_row_is_skipped_quietly_and_exits_zero(self):
-        code, out, err = self.run_publish("완료")
+    def test_completed_row_is_skipped_without_reading_slack(self):
+        code, out, err, fetched, trashed = self.run_publish("완료")
         self.assertEqual(code, 0)
         self.assertIn("skipped", out)
         self.assertIn("건너뜀 1개", out)
-        self.assertNotIn("미완료", out)
+        self.assertNotIn("복구", out)
+        self.assertEqual(trashed, [])
+        # What makes the extra monthly firings affordable: a finished channel
+        # costs one Notion query and no Slack history calls at all.
+        self.assertEqual(fetched, [])
         self.assertEqual(err, "")
 
-    def test_in_progress_row_is_flagged_and_exits_nonzero(self):
-        code, out, err = self.run_publish("진행 중")
-        self.assertEqual(code, 1)
-        self.assertIn("미완료", out)
-        self.assertIn("미완료 행 1개", out)
-        self.assertIn("휴지통", err)
+    def test_in_progress_row_is_trashed_and_rebuilt(self):
+        code, out, err, fetched, trashed = self.run_publish("진행 중")
+        self.assertEqual(code, 0)
+        self.assertIn("복구", out)
+        self.assertIn("미완료 행 복구 1개", out)
+        self.assertEqual(trashed, ["PAGE"])
+        self.assertEqual(fetched, ["C1"])
+        self.assertIn("created", out)
         self.assertNotIn("skipped", out)
 
-    def test_failed_row_is_flagged_too(self):
-        code, out, err = self.run_publish("실패")
-        self.assertEqual(code, 1)
+    def test_failed_row_is_rebuilt_too(self):
+        code, out, err, fetched, trashed = self.run_publish("실패")
+        self.assertEqual(code, 0)
         self.assertIn("실패", out)
-        self.assertIn("휴지통", err)
+        self.assertEqual(trashed, ["PAGE"])
+        self.assertIn("created", out)
 
-    def test_row_without_a_readable_status_is_flagged(self):
-        code, out, err = self.run_publish(None)
-        self.assertEqual(code, 1)
+    def test_row_without_a_readable_status_is_rebuilt(self):
+        code, out, err, fetched, trashed = self.run_publish(None)
+        self.assertEqual(code, 0)
         self.assertIn("알 수 없음", out)
+        self.assertEqual(trashed, ["PAGE"])
+
+
+class ArchivePageTests(unittest.TestCase):
+    def test_archive_page_sends_the_row_to_the_trash(self):
+        fake = FakeNotionDatabaseHttp()
+        notion = notion_client.NotionClient("token", "DATA_SOURCE", http=fake)
+        notion.archive_page("PAGE_ID")
+        method, url, body = fake.requests[-1]
+        self.assertEqual(method, "PATCH")
+        self.assertTrue(url.endswith("/pages/PAGE_ID"))
+        self.assertEqual(body, {"in_trash": True})
 
 
 if __name__ == "__main__":

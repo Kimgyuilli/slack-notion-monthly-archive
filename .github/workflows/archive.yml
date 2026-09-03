@@ -2,8 +2,18 @@ name: Archive Slack to Notion
 
 on:
   schedule:
-    # GitHub Actions cron is UTC only: 00:17 UTC on the 1st = 09:17 KST.
-    - cron: "17 0 1 * *"
+    # GitHub Actions cron is UTC only: 00:17 UTC = 09:17 KST.
+    #
+    # Three firings, not one, because a scheduled run that collides with a
+    # GitHub Actions outage is never queued at all — it vanishes without even a
+    # failure notification, and a once-a-month workflow would lose the whole
+    # month silently. The 11th and 21st are outage backstops: every channel
+    # already 완료 is skipped after one Notion query, without re-reading Slack.
+    #
+    # The 31st is deliberately absent. It does not exist in five months of the
+    # year, so including it would make the gap uneven rather than shorter.
+    # month_window() still resolves to the previous month on all three days.
+    - cron: "17 0 1,11,21 * *"
   workflow_dispatch:
     inputs:
       month:
@@ -54,5 +64,19 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      # In-job retries cover what the schedule cannot: a transient Slack or
+      # Notion failure that takes out one channel minutes before the next
+      # firing is three weeks away. Channels finished by an earlier attempt
+      # cost one Notion query each, so a retry only redoes the work that failed.
       - name: Archive the target month
-        run: python archive.py --publish
+        run: |
+          for attempt in 1 2 3; do
+            if python archive.py --publish; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "attempt $attempt failed; retrying in $((attempt * 300))s"
+              sleep $((attempt * 300))
+            fi
+          done
+          exit 1

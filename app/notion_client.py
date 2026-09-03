@@ -163,6 +163,20 @@ class NotionClient:
             None,
         )
 
+    def archive_page(self, page_id: str) -> None:
+        """Send a page to Notion's trash, freeing its 채널 + 기간 slot.
+
+        Only ever called on a row the status check already judged incomplete.
+        Notion keeps trashed pages for 30 days, so the partial body stays
+        recoverable by hand if the judgement was ever wrong.
+        """
+        self.http.request(
+            "PATCH",
+            f"{NOTION_API}/pages/{page_id}",
+            headers=self.headers,
+            body={"in_trash": True},
+        )
+
     @staticmethod
     def entry_status(page: dict[str, Any]) -> str:
         """Read a row's 상태, or "" when Notion did not return the property."""
