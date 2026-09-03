@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Archive one calendar month of Slack messages into Notion pages.
+"""Archive one calendar month of Slack messages into a Notion database.
 
 This is deliberately dependency-free so it can run on GitHub Actions without a
 package installation step. By default it prints a preview. Passing --publish is
@@ -37,6 +37,13 @@ MAX_NOTION_TEXT_LENGTH = 1900
 NOTION_SINGLE_PART_LIMIT_BYTES = 20 * 1024 * 1024
 NOTION_PART_BYTES = 10 * 1024 * 1024
 DEFAULT_MAX_IMAGE_MB = 200
+NOTION_TITLE_PROPERTY = "이름"
+NOTION_CHANNEL_PROPERTY = "채널"
+NOTION_PERIOD_PROPERTY = "기간"
+NOTION_STATUS_PROPERTY = "상태"
+NOTION_STATUS_IN_PROGRESS = "진행 중"
+NOTION_STATUS_COMPLETE = "완료"
+NOTION_STATUS_FAILED = "실패"
 
 
 class ArchiveError(RuntimeError):
@@ -383,34 +390,84 @@ class SlackClient:
 
 
 class NotionClient:
-    def __init__(self, token: str, parent_page_id: str, http: JsonHttpClient | None = None):
-        self.parent_page_id = parent_page_id
+    def __init__(self, token: str, data_source_id: str, http: JsonHttpClient | None = None):
+        self.data_source_id = data_source_id
         self.http = http or JsonHttpClient()
         self.headers = {
             "Authorization": f"Bearer {token}",
             "Notion-Version": NOTION_VERSION,
         }
 
-    def exact_page(self, title: str) -> dict[str, Any] | None:
+    def validate_schema(self) -> None:
+        result = self.http.request(
+            "GET",
+            f"{NOTION_API}/data_sources/{self.data_source_id}",
+            headers=self.headers,
+        )
+        properties = result.get("properties", {})
+        expected = {
+            NOTION_TITLE_PROPERTY: "title",
+            NOTION_CHANNEL_PROPERTY: "select",
+            NOTION_PERIOD_PROPERTY: "select",
+            NOTION_STATUS_PROPERTY: "status",
+        }
+        errors = [
+            f"{name}({property_type})"
+            for name, property_type in expected.items()
+            if properties.get(name, {}).get("type") != property_type
+        ]
+        if errors:
+            raise ArchiveError(
+                "Notion DB에 다음 속성이 필요합니다: " + ", ".join(errors)
+            )
+
+        status_options = {
+            option.get("name")
+            for option in properties[NOTION_STATUS_PROPERTY]
+            .get("status", {})
+            .get("options", [])
+        }
+        required_statuses = {
+            NOTION_STATUS_IN_PROGRESS,
+            NOTION_STATUS_COMPLETE,
+            NOTION_STATUS_FAILED,
+        }
+        missing_statuses = sorted(required_statuses - status_options)
+        if missing_statuses:
+            raise ArchiveError(
+                f"Notion DB의 {NOTION_STATUS_PROPERTY} 속성에 다음 옵션을 추가하세요: "
+                + ", ".join(missing_statuses)
+            )
+
+    def exact_entry(self, channel_label: str, period: str) -> dict[str, Any] | None:
         result = self.http.request(
             "POST",
-            f"{NOTION_API}/search",
+            f"{NOTION_API}/data_sources/{self.data_source_id}/query",
             headers=self.headers,
             body={
-                "query": title,
-                "filter": {"property": "object", "value": "page"},
-                "page_size": 100,
+                "filter": {
+                    "and": [
+                        {
+                            "property": NOTION_CHANNEL_PROPERTY,
+                            "select": {"equals": channel_label},
+                        },
+                        {
+                            "property": NOTION_PERIOD_PROPERTY,
+                            "select": {"equals": period},
+                        },
+                    ]
+                },
+                "page_size": 1,
             },
         )
-        expected_parent = normalize_id(self.parent_page_id)
-        for page in result.get("results", []):
-            parent = page.get("parent", {})
-            parent_id = parent.get("page_id")
-            if not parent_id or normalize_id(parent_id) != expected_parent:
-                continue
-            if page_title(page) == title and not page.get("in_trash", False):
-                return page
-        return None
+        return next(
+            (
+                page
+                for page in result.get("results", [])
+                if not page.get("in_trash", False)
+            ),
+            None,
+        )
 
     def upload_file(self, downloaded: DownloadedFile) -> str:
         """Upload a local file to Notion, using multi-part mode above 20 MiB."""
@@ -461,8 +518,26 @@ class NotionClient:
             raise ArchiveError(f"Notion 이미지 업로드 상태가 예상과 다릅니다: {upload.get('status')}")
         return upload_id
 
-    def create_archive_page(self, title: str, blocks: list[dict[str, Any]]) -> dict[str, Any]:
-        existing = self.exact_page(title)
+    def update_status(self, page_id: str, status: str) -> None:
+        self.http.request(
+            "PATCH",
+            f"{NOTION_API}/pages/{page_id}",
+            headers=self.headers,
+            body={
+                "properties": {
+                    NOTION_STATUS_PROPERTY: {"status": {"name": status}}
+                }
+            },
+        )
+
+    def create_archive_entry(
+        self,
+        title: str,
+        channel_label: str,
+        period: str,
+        blocks: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        existing = self.exact_entry(channel_label, period)
         if existing:
             return {"status": "skipped", "url": existing.get("url"), "id": existing["id"]}
 
@@ -471,29 +546,40 @@ class NotionClient:
             f"{NOTION_API}/pages",
             headers=self.headers,
             body={
-                "parent": {"type": "page_id", "page_id": self.parent_page_id},
+                "parent": {
+                    "type": "data_source_id",
+                    "data_source_id": self.data_source_id,
+                },
                 "properties": {
-                    "title": {
-                        "type": "title",
+                    NOTION_TITLE_PROPERTY: {
                         "title": [{"type": "text", "text": {"content": title}}],
-                    }
+                    },
+                    NOTION_CHANNEL_PROPERTY: {"select": {"name": channel_label}},
+                    NOTION_PERIOD_PROPERTY: {"select": {"name": period}},
+                    NOTION_STATUS_PROPERTY: {
+                        "status": {"name": NOTION_STATUS_IN_PROGRESS}
+                    },
                 },
             },
         )
-        page_id = page["id"]
-        for batch in chunked(blocks, MAX_NOTION_BLOCKS_PER_REQUEST):
-            self.http.request(
-                "PATCH",
-                f"{NOTION_API}/blocks/{page_id}/children",
-                headers=self.headers,
-                body={"children": batch},
-            )
-            time.sleep(0.35)  # Keep comfortably below Notion's average 3 req/s limit.
+        page_id = page.get("id")
+        if not page_id:
+            raise ArchiveError("Notion이 생성된 DB 페이지 ID를 반환하지 않았습니다.")
+        try:
+            for batch in chunked(blocks, MAX_NOTION_BLOCKS_PER_REQUEST):
+                self.http.request(
+                    "PATCH",
+                    f"{NOTION_API}/blocks/{page_id}/children",
+                    headers=self.headers,
+                    body={"children": batch},
+                )
+                time.sleep(0.35)  # Keep comfortably below Notion's average 3 req/s limit.
+            self.update_status(page_id, NOTION_STATUS_COMPLETE)
+        except Exception:
+            with contextlib.suppress(Exception):
+                self.update_status(page_id, NOTION_STATUS_FAILED)
+            raise
         return {"status": "created", "url": page.get("url"), "id": page_id}
-
-
-def normalize_id(value: str) -> str:
-    return value.replace("-", "").lower()
 
 
 def safe_filename(value: str) -> str:
@@ -551,11 +637,6 @@ def upload_message_images(
                 if downloaded:
                     downloaded.cleanup()
     return uploaded, failed
-
-
-def page_title(page: dict[str, Any]) -> str:
-    title_property = page.get("properties", {}).get("title", {})
-    return "".join(part.get("plain_text", "") for part in title_property.get("title", []))
 
 
 def chunked(items: list[Any], size: int) -> Iterable[list[Any]]:
@@ -719,7 +800,14 @@ def markdown_preview(
     window: MonthWindow,
     workspace_url: str,
 ) -> str:
-    lines = [f"# Slack · {window.label} · #{channel.get('name', channel['id'])}", ""]
+    channel_label = f"#{channel.get('name', channel['id'])}"
+    title = f"Slack · {window.label} · {channel_label}"
+    lines = [
+        f"[Notion DB] 이름={title} · 채널={channel_label} · 기간={window.label} · 상태={NOTION_STATUS_COMPLETE}",
+        "",
+        f"# {title}",
+        "",
+    ]
     current_date = None
     for message in messages:
         sent_at = kst_datetime(message["ts"])
@@ -863,11 +951,12 @@ def run(args: argparse.Namespace) -> int:
     if args.mock:
         raise ArchiveError("--mock과 --publish는 함께 사용할 수 없습니다.")
     notion_token = os.getenv("NOTION_TOKEN")
-    notion_parent = os.getenv("NOTION_PARENT_PAGE_ID")
-    if not notion_token or not notion_parent:
-        raise ArchiveError("게시하려면 NOTION_TOKEN과 NOTION_PARENT_PAGE_ID가 필요합니다.")
+    notion_data_source = os.getenv("NOTION_DATA_SOURCE_ID")
+    if not notion_token or not notion_data_source:
+        raise ArchiveError("게시하려면 NOTION_TOKEN과 NOTION_DATA_SOURCE_ID가 필요합니다.")
 
-    notion = NotionClient(notion_token, notion_parent)
+    notion = NotionClient(notion_token, notion_data_source)
+    notion.validate_schema()
     try:
         configured_max = (
             args.max_image_mb
@@ -882,8 +971,9 @@ def run(args: argparse.Namespace) -> int:
     max_image_bytes = max_image_mb * 1024 * 1024
     created = skipped = 0
     for channel in channels:
-        title = f"Slack · {window.label} · #{channel.get('name', channel['id'])}"
-        existing = notion.exact_page(title)
+        channel_label = f"#{channel.get('name', channel['id'])}"
+        title = f"Slack · {window.label} · {channel_label}"
+        existing = notion.exact_entry(channel_label, window.label)
         if existing:
             skipped += 1
             print(f"skipped  {title}  {existing.get('url') or existing['id']}")
@@ -897,7 +987,12 @@ def run(args: argparse.Namespace) -> int:
         blocks = archive_blocks(
             channel, channel["messages"], users, window, workspace_url
         )
-        result = notion.create_archive_page(title, blocks)
+        result = notion.create_archive_entry(
+            title,
+            channel_label,
+            window.label,
+            blocks,
+        )
         if result["status"] == "created":
             created += 1
         else:

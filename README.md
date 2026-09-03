@@ -1,6 +1,6 @@
 # Slack → Notion 월별 아카이빙 데모
 
-Slack의 한 달 메시지를 채널별 Notion 페이지로 만드는, 외부 Python 패키지가 필요 없는 데모입니다. 기본 실행은 Markdown 미리보기이며 `--publish`를 명시해야만 Notion에 쓰기 작업을 합니다.
+Slack의 한 달 메시지를 채널별 Notion DB 행으로 만드는, 외부 Python 패키지가 필요 없는 데모입니다. 각 행은 상세 페이지이기도 하므로 메시지와 이미지는 행의 본문에 저장됩니다. 기본 실행은 Markdown 미리보기이며 `--publish`를 명시해야만 Notion에 쓰기 작업을 합니다.
 
 ## 1분 데모
 
@@ -48,18 +48,29 @@ groups:history
 ### 2. Notion 연결
 
 1. Notion `Settings → Connections`에서 내부 연결을 만듭니다.
-2. 아카이브의 상위 페이지로 사용할 빈 페이지를 하나 만듭니다.
-3. 그 페이지의 `Connections`에 내부 연결을 추가합니다.
-4. 연결 토큰과 페이지 ID를 준비합니다.
+2. 아카이브용 데이터베이스를 만들고 아래 속성을 정확한 이름과 타입으로 추가합니다.
+3. 데이터베이스의 `Connections`에 내부 연결을 추가합니다.
+4. 데이터베이스 메뉴의 `Manage data sources → Copy data source ID`에서 데이터 소스 ID를 복사합니다.
+5. 연결 토큰과 데이터 소스 ID를 준비합니다.
 
-스크립트는 상위 페이지 아래에 다음과 같은 페이지를 만듭니다.
+필수 DB 속성:
+
+| 속성 | 타입 | 값 예시 |
+|---|---|---|
+| `이름` | Title | `Slack · 2026-08 · #general` |
+| `채널` | Select | `#general` |
+| `기간` | Select | `2026-08` |
+| `상태` | Status | `진행 중`, `완료`, `실패` |
+
+스크립트는 채널마다 다음과 같은 DB 행을 만들고, 해당 행의 상세 페이지 본문에 메시지와 이미지를 저장합니다.
 
 ```text
-Slack · 2026-08 · #general
-Slack · 2026-08 · #product
+이름                         채널       기간       상태
+Slack · 2026-08 · #general  #general   2026-08    완료
+Slack · 2026-08 · #product  #product   2026-08    완료
 ```
 
-동일한 상위 페이지에 같은 제목의 페이지가 이미 있으면 안전하게 건너뜁니다. 기존 페이지를 삭제하거나 덮어쓰지 않습니다.
+저장을 시작할 때 상태는 `진행 중`, 본문 저장까지 끝나면 `완료`, 본문 저장 중 오류가 발생하면 `실패`가 됩니다. 새로운 채널명과 월은 `채널` 및 `기간` Select 옵션에 자동으로 추가됩니다. 동일한 `채널 + 기간` 행이 이미 있으면 안전하게 건너뛰며 기존 행을 삭제하거나 덮어쓰지 않습니다.
 
 ### 3. 로컬 미리보기
 
@@ -82,7 +93,7 @@ python3 archive.py --month 2026-08 --channel general --channel product
 
 ```bash
 export NOTION_TOKEN="ntn_..."
-export NOTION_PARENT_PAGE_ID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+export NOTION_DATA_SOURCE_ID="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 
 python3 archive.py --month 2026-08 --publish
 ```
@@ -95,7 +106,6 @@ Repository secrets:
 
 - `SLACK_BOT_TOKEN`
 - `NOTION_TOKEN`
-- `NOTION_PARENT_PAGE_ID`
 - `AUTO_JOIN_PUBLIC_CHANNELS`: 선택 사항. `true`일 때만 `SLACK_CHANNELS`에 지정한 공개 채널에 자동 참여하며, 기본값은 `false`
 
 Repository variables:
@@ -103,6 +113,7 @@ Repository variables:
 - `SLACK_WORKSPACE_URL`: `https://your-workspace.slack.com`
 - `SLACK_CHANNELS`: 선택 사항. `general,product,engineering` 형식이며 비어 있으면 봇이 참여한 모든 채널
 - `MAX_IMAGE_MB`: 선택 사항. 이미지 하나의 최대 다운로드 크기이며 기본값은 `200`, 최대 `5120`
+- `NOTION_DATA_SOURCE_ID`: 아카이빙 DB의 데이터 소스 ID
 
 자동 참여를 사용하려면 `AUTO_JOIN_PUBLIC_CHANNELS` Secret을 `true`로 설정하고 `SLACK_CHANNELS` Variable에 대상 채널 이름이나 ID를 반드시 입력합니다. 채널 목록 없이 자동 참여를 켜면 모든 공개 채널에 실수로 가입하는 것을 막기 위해 실행이 중단됩니다. `channels:join` 권한을 추가한 뒤에는 Slack 앱을 워크스페이스에 다시 설치해야 합니다.
 
@@ -122,7 +133,7 @@ Repository variables:
 4. `month`에 아카이빙할 월을 `YYYY-MM` 형식으로 입력합니다. 예: `2026-08`
 5. **Run workflow**를 눌러 실행하고 같은 화면에서 실행 로그와 결과를 확인합니다.
 
-`month`를 비우면 KST 기준 지난달을 아카이빙합니다. 이미 같은 제목의 채널·월 페이지가 Notion에 있으면 덮어쓰지 않고 건너뛰므로 동일한 월을 다시 실행해도 기존 페이지는 보존됩니다.
+`month`를 비우면 KST 기준 지난달을 아카이빙합니다. 이미 같은 `채널 + 기간` 행이 Notion DB에 있으면 덮어쓰지 않고 건너뛰므로 동일한 월을 다시 실행해도 기존 페이지는 보존됩니다.
 
 GitHub CLI를 사용한다면 다음과 같이 실행할 수도 있습니다.
 
@@ -166,6 +177,7 @@ python3 archive.py --month 2026-08 --channel general --channel product --publish
 - Slack 원문 링크
 - Slack·Notion API 일시 오류 및 `429` 재시도
 - Notion API의 요청당 100블록 제한 처리
+- 채널·기간 Select 라벨과 진행 상태 관리
 
 ## 데모의 의도적인 한계
 
@@ -176,5 +188,6 @@ python3 archive.py --month 2026-08 --channel general --channel product --publish
 - 현재는 이미지 MIME 타입(`image/*`)만 원본을 복사하며 PDF와 일반 파일은 이름만 남깁니다.
 - 앱이 참여하지 않은 비공개 채널과 구성원 간 DM은 읽을 수 없습니다.
 - Slack 특유의 모든 Block Kit 서식을 1:1로 재현하지는 않습니다.
+- `실패` 상태의 행도 중복으로 판단합니다. 해당 채널·월을 다시 아카이빙하려면 실패한 행을 휴지통으로 옮긴 뒤 재실행합니다.
 
 즉, 이 데모는 **공개 업무 채널의 월별 지식 아카이브 MVP**입니다. 감사·법적 보존 수준이 필요하면 Events API 수집기, 원본 JSON 저장소, 파일 원본 저장 및 삭제/수정 이벤트 처리를 추가해야 합니다.

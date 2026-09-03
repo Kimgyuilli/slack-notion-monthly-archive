@@ -30,7 +30,7 @@ jobs:
       SLACK_CHANNELS: ${{ vars.SLACK_CHANNELS }}
       MAX_IMAGE_MB: ${{ vars.MAX_IMAGE_MB || '200' }}
       NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-      NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
+      NOTION_DATA_SOURCE_ID: ${{ vars.NOTION_DATA_SOURCE_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

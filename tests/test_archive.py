@@ -64,6 +64,47 @@ class FakeSlackHttp:
         raise AssertionError(slack_method)
 
 
+class FakeNotionDatabaseHttp:
+    def __init__(self, *, include_status=True, existing=None, fail_blocks=False):
+        self.include_status = include_status
+        self.existing = existing
+        self.fail_blocks = fail_blocks
+        self.requests = []
+
+    def request(self, method, url, **kwargs):
+        body = kwargs.get("body")
+        self.requests.append((method, url, body))
+        if method == "GET" and url.endswith("/data_sources/DATA_SOURCE"):
+            properties = {
+                "이름": {"type": "title", "title": {}},
+                "채널": {"type": "select", "select": {"options": []}},
+                "기간": {"type": "select", "select": {"options": []}},
+            }
+            if self.include_status:
+                properties["상태"] = {
+                    "type": "status",
+                    "status": {
+                        "options": [
+                            {"name": "진행 중"},
+                            {"name": "완료"},
+                            {"name": "실패"},
+                        ]
+                    },
+                }
+            return {"id": "DATA_SOURCE", "properties": properties}
+        if method == "POST" and url.endswith("/data_sources/DATA_SOURCE/query"):
+            return {"results": [self.existing] if self.existing else []}
+        if method == "POST" and url.endswith("/pages"):
+            return {"id": "PAGE_ID", "url": "https://notion.example/PAGE_ID"}
+        if method == "PATCH" and "/blocks/" in url:
+            if self.fail_blocks:
+                raise archive.ArchiveError("block append failed")
+            return {}
+        if method == "PATCH" and url.endswith("/pages/PAGE_ID"):
+            return {"id": "PAGE_ID"}
+        raise AssertionError((method, url))
+
+
 class ArchiveTests(unittest.TestCase):
     def test_defaults_to_previous_kst_month(self):
         now = datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc)
@@ -95,6 +136,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertIn("↳ **08-03 09:20 서연**", preview)
         self.assertIn("@서연 QA 일정", preview)
         self.assertIn("https://demo.slack.com/archives/C01PRODUCT/", preview)
+        self.assertIn("채널=#product · 기간=2026-08 · 상태=완료", preview)
 
     def test_chunked_never_exceeds_notion_limit(self):
         batches = list(archive.chunked(list(range(251)), 100))
@@ -134,6 +176,80 @@ class ArchiveTests(unittest.TestCase):
         slack = archive.SlackClient("token", http=FakeSlackHttp())
         with self.assertRaises(archive.ArchiveError):
             slack.member_channels(None, auto_join_public=True)
+
+    def test_notion_database_schema_is_validated(self):
+        notion = archive.NotionClient("token", "DATA_SOURCE", http=FakeNotionDatabaseHttp())
+        notion.validate_schema()
+
+        missing_status = archive.NotionClient(
+            "token",
+            "DATA_SOURCE",
+            http=FakeNotionDatabaseHttp(include_status=False),
+        )
+        with self.assertRaisesRegex(archive.ArchiveError, "상태\\(status\\)"):
+            missing_status.validate_schema()
+
+    def test_notion_duplicate_query_uses_channel_and_period(self):
+        existing = {"id": "EXISTING", "url": "https://notion.example/EXISTING"}
+        fake = FakeNotionDatabaseHttp(existing=existing)
+        notion = archive.NotionClient("token", "DATA_SOURCE", http=fake)
+        result = notion.exact_entry("#product", "2026-08")
+        self.assertEqual(result, existing)
+        query = fake.requests[-1][2]
+        self.assertEqual(
+            query["filter"]["and"],
+            [
+                {"property": "채널", "select": {"equals": "#product"}},
+                {"property": "기간", "select": {"equals": "2026-08"}},
+            ],
+        )
+
+    def test_notion_database_entry_sets_labels_and_status(self):
+        fake = FakeNotionDatabaseHttp()
+        notion = archive.NotionClient("token", "DATA_SOURCE", http=fake)
+        with mock.patch.object(archive.time, "sleep"):
+            result = notion.create_archive_entry(
+                "Slack · 2026-08 · #product",
+                "#product",
+                "2026-08",
+                [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": []}}],
+            )
+        self.assertEqual(result["status"], "created")
+        create_body = next(
+            body
+            for method, url, body in fake.requests
+            if method == "POST" and url.endswith("/pages")
+        )
+        self.assertEqual(
+            create_body["parent"],
+            {"type": "data_source_id", "data_source_id": "DATA_SOURCE"},
+        )
+        self.assertEqual(create_body["properties"]["채널"]["select"]["name"], "#product")
+        self.assertEqual(create_body["properties"]["기간"]["select"]["name"], "2026-08")
+        self.assertEqual(create_body["properties"]["상태"]["status"]["name"], "진행 중")
+        status_updates = [
+            body["properties"]["상태"]["status"]["name"]
+            for method, url, body in fake.requests
+            if method == "PATCH" and url.endswith("/pages/PAGE_ID")
+        ]
+        self.assertEqual(status_updates, ["완료"])
+
+    def test_notion_database_entry_marks_failed_when_blocks_fail(self):
+        fake = FakeNotionDatabaseHttp(fail_blocks=True)
+        notion = archive.NotionClient("token", "DATA_SOURCE", http=fake)
+        with self.assertRaisesRegex(archive.ArchiveError, "block append failed"):
+            notion.create_archive_entry(
+                "Slack · 2026-08 · #product",
+                "#product",
+                "2026-08",
+                [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": []}}],
+            )
+        status_updates = [
+            body["properties"]["상태"]["status"]["name"]
+            for method, url, body in fake.requests
+            if method == "PATCH" and url.endswith("/pages/PAGE_ID")
+        ]
+        self.assertEqual(status_updates, ["실패"])
 
     def test_uploaded_image_becomes_notion_image_block(self):
         window = archive.month_window("2026-08")
