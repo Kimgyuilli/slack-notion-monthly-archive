@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import tempfile
 import time
 
@@ -9,13 +10,11 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from app.constants import SLACK_API
 from app.http_client import JsonHttpClient
-from app.models import (
-    ArchiveError,
-    DownloadedFile,
-    MonthWindow,
-)
+from app.models import ArchiveError, DownloadedFile, MonthWindow
+
+
+SLACK_API = "https://slack.com/api"
 
 
 def safe_filename(value: str) -> str:
@@ -40,18 +39,13 @@ def safe_filename(value: str) -> str:
 
     shortened = (
         root.encode("utf-8")[:allowed]
-        .decode(
-            "utf-8",
-            errors="ignore",
-        )
+        .decode("utf-8", errors="ignore")
     )
 
     return shortened + extension
 
 
 def safe_content_type(value: Any) -> str:
-    import re
-
     content_type = str(
         value or "application/octet-stream"
     ).lower()
@@ -119,14 +113,9 @@ class SlackClient:
                 "Slack 파일에 다운로드 URL이 없습니다."
             )
 
-        expected_size = int(
-            file.get("size") or 0
-        )
+        expected_size = int(file.get("size") or 0)
 
-        if (
-                expected_size
-                and expected_size > max_bytes
-        ):
+        if expected_size and expected_size > max_bytes:
             raise ArchiveError(
                 "설정된 이미지 한도"
                 f"({max_bytes // 1024 // 1024}MB)"
@@ -136,19 +125,14 @@ class SlackClient:
         filename = safe_filename(
             file.get("name")
             or file.get("title")
-            or (
-                f"slack-image-"
-                f"{file.get('id', 'unknown')}"
-            )
+            or f"slack-image-{file.get('id', 'unknown')}"
         )
 
         content_type = safe_content_type(
             file.get("mimetype")
         )
 
-        for attempt in range(
-                self.http.retries + 1
-        ):
+        for attempt in range(self.http.retries + 1):
             temp = tempfile.NamedTemporaryFile(
                 prefix="slack-image-",
                 delete=False,
@@ -160,9 +144,7 @@ class SlackClient:
                 request = Request(
                     url,
                     headers={
-                        "Authorization": (
-                            f"Bearer {self.token}"
-                        )
+                        "Authorization": f"Bearer {self.token}"
                     },
                 )
 
@@ -177,17 +159,13 @@ class SlackClient:
                         response.headers.get_content_type()
                     )
 
-                    if response_type.startswith(
-                            "image/"
-                    ):
+                    if response_type.startswith("image/"):
                         content_type = response_type
 
                     total = 0
 
                     while True:
-                        chunk = response.read(
-                            1024 * 1024
-                        )
+                        chunk = response.read(1024 * 1024)
 
                         if not chunk:
                             break
@@ -212,13 +190,10 @@ class SlackClient:
                 )
 
             except (HTTPError, URLError) as error:
-
                 with contextlib.suppress(Exception):
                     temp.close()
 
-                with contextlib.suppress(
-                        FileNotFoundError
-                ):
+                with contextlib.suppress(FileNotFoundError):
                     os.unlink(temp_path)
 
                 retryable = (
@@ -232,13 +207,8 @@ class SlackClient:
                         and attempt < self.http.retries
                 ):
                     retry_after = (
-                        error.headers.get(
-                            "Retry-After"
-                        )
-                        if isinstance(
-                            error,
-                            HTTPError,
-                        )
+                        error.headers.get("Retry-After")
+                        if isinstance(error, HTTPError)
                         else None
                     )
 
@@ -262,13 +232,10 @@ class SlackClient:
                 ) from error
 
             except Exception:
-
                 with contextlib.suppress(Exception):
                     temp.close()
 
-                with contextlib.suppress(
-                        FileNotFoundError
-                ):
+                with contextlib.suppress(FileNotFoundError):
                     os.unlink(temp_path)
 
                 raise
@@ -286,14 +253,8 @@ class SlackClient:
                 cursor=cursor,
             )
 
-            for user in result.get(
-                    "members",
-                    [],
-            ):
-                profile = user.get(
-                    "profile",
-                    {},
-                )
+            for user in result.get("members", []):
+                profile = user.get("profile", {})
 
                 names[user["id"]] = (
                         profile.get("display_name")
@@ -304,14 +265,8 @@ class SlackClient:
                 )
 
             cursor = (
-                result.get(
-                    "response_metadata",
-                    {},
-                )
-                .get(
-                    "next_cursor",
-                    "",
-                )
+                result.get("response_metadata", {})
+                .get("next_cursor", "")
             )
 
             if not cursor:
@@ -329,27 +284,17 @@ class SlackClient:
         while True:
             result = self.call(
                 "conversations.list",
-                types=(
-                    "public_channel,"
-                    "private_channel"
-                ),
+                types="public_channel,private_channel",
                 exclude_archived="true",
                 limit=200,
                 cursor=cursor,
             )
 
-            for channel in result.get(
-                    "channels",
-                    [],
-            ):
-                if not channel.get(
-                        "is_member"
-                ):
+            for channel in result.get("channels", []):
+                if not channel.get("is_member"):
                     if (
                             not auto_join_public
-                            or channel.get(
-                        "is_private"
-                    )
+                            or channel.get("is_private")
                     ):
                         continue
 
@@ -370,14 +315,8 @@ class SlackClient:
                 channels.append(channel)
 
             cursor = (
-                result.get(
-                    "response_metadata",
-                    {},
-                )
-                .get(
-                    "next_cursor",
-                    "",
-                )
+                result.get("response_metadata", {})
+                .get("next_cursor", "")
             )
 
             if not cursor:
@@ -411,10 +350,7 @@ class SlackClient:
 
             roots.extend(
                 message
-                for message in result.get(
-                    "messages",
-                    [],
-                )
+                for message in result.get("messages", [])
                 if (
                         window.start.timestamp()
                         <= float(message["ts"])
@@ -423,14 +359,8 @@ class SlackClient:
             )
 
             cursor = (
-                result.get(
-                    "response_metadata",
-                    {},
-                )
-                .get(
-                    "next_cursor",
-                    "",
-                )
+                result.get("response_metadata", {})
+                .get("next_cursor", "")
             )
 
             if not cursor:
@@ -440,23 +370,16 @@ class SlackClient:
 
         for root in sorted(
                 roots,
-                key=lambda item: float(
-                    item["ts"]
-                ),
+                key=lambda item: float(item["ts"]),
         ):
             root = dict(root)
             root["_replies"] = []
 
-            if root.get(
-                    "reply_count",
-                    0,
-            ):
-                root["_replies"] = (
-                    self.thread_replies(
-                        channel_id,
-                        root["ts"],
-                        window,
-                    )
+            if root.get("reply_count", 0):
+                root["_replies"] = self.thread_replies(
+                    channel_id,
+                    root["ts"],
+                    window,
                 )
 
             output.append(root)
@@ -485,13 +408,8 @@ class SlackClient:
                 cursor=cursor,
             )
 
-            for message in result.get(
-                    "messages",
-                    [],
-            ):
-                timestamp = float(
-                    message["ts"]
-                )
+            for message in result.get("messages", []):
+                timestamp = float(message["ts"])
 
                 if (
                         message["ts"] != root_ts
@@ -502,20 +420,12 @@ class SlackClient:
                     replies.append(message)
 
             cursor = (
-                result.get(
-                    "response_metadata",
-                    {},
-                )
-                .get(
-                    "next_cursor",
-                    "",
-                )
+                result.get("response_metadata", {})
+                .get("next_cursor", "")
             )
 
             if not cursor:
                 return sorted(
                     replies,
-                    key=lambda item: float(
-                        item["ts"]
-                    ),
+                    key=lambda item: float(item["ts"]),
                 )

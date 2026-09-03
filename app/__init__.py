@@ -1,1 +1,1 @@
-# intentionally empty
+"""Slack to Notion monthly archive application."""

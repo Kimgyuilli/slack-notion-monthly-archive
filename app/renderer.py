@@ -3,32 +3,14 @@ from __future__ import annotations
 import calendar
 import re
 
-from datetime import (
-    datetime,
-    timezone,
-)
-from typing import Any, Iterable
+from datetime import datetime, timezone
+from typing import Any
 
-from app.constants import (
-    KST,
-    MAX_NOTION_TEXT_LENGTH,
-    NOTION_STATUS_COMPLETE,
-)
-from app.models import MonthWindow
+from app.models import KST, MonthWindow
 
 
-def chunked(
-        items: list[Any],
-        size: int,
-) -> Iterable[list[Any]]:
-    for index in range(
-            0,
-            len(items),
-            size,
-    ):
-        yield items[
-            index : index + size
-        ]
+MAX_NOTION_TEXT_LENGTH = 1900
+NOTION_STATUS_COMPLETE = "완료"
 
 
 def slack_text(
@@ -47,8 +29,7 @@ def slack_text(
     text = re.sub(
         r"<([^>|]+)\|([^>]+)>",
         lambda match: (
-            f"{match.group(2)} "
-            f"({match.group(1)})"
+            f"{match.group(2)} ({match.group(1)})"
         ),
         text,
     )
@@ -93,10 +74,7 @@ def message_author(
 
     return (
             message.get("username")
-            or message.get(
-        "bot_profile",
-        {},
-    ).get("name")
+            or message.get("bot_profile", {}).get("name")
             or "Slack Bot"
     )
 
@@ -107,10 +85,7 @@ def message_details(
 
     extras: list[str] = []
 
-    reactions = message.get(
-        "reactions",
-        [],
-    )
+    reactions = message.get("reactions", [])
 
     if reactions:
         extras.append(
@@ -123,10 +98,7 @@ def message_details(
             )
         )
 
-    files = message.get(
-        "files",
-        [],
-    )
+    files = message.get("files", [])
 
     if files:
         extras.append(
@@ -162,9 +134,7 @@ def rich_text(
     if not content:
         return []
 
-    pieces: list[
-        dict[str, Any]
-    ] = []
+    pieces: list[dict[str, Any]] = []
 
     for index in range(
             0,
@@ -173,17 +143,12 @@ def rich_text(
     ):
         text: dict[str, Any] = {
             "content": content[
-                index : (
-                        index
-                        + MAX_NOTION_TEXT_LENGTH
-                )
+                index:index + MAX_NOTION_TEXT_LENGTH
             ]
         }
 
         if link:
-            text["link"] = {
-                "url": link
-            }
+            text["link"] = {"url": link}
 
         pieces.append(
             {
@@ -207,9 +172,7 @@ def paragraph_block(
         reply: bool = False,
 ) -> dict[str, Any]:
 
-    sent_at = kst_datetime(
-        message["ts"]
-    )
+    sent_at = kst_datetime(message["ts"])
 
     prefix = "↳ " if reply else ""
 
@@ -226,14 +189,11 @@ def paragraph_block(
     )
 
     body = slack_text(
-        message.get("text")
-        or "(본문 없음)",
+        message.get("text") or "(본문 없음)",
         users,
         )
 
-    details = message_details(
-        message
-    )
+    details = message_details(message)
 
     if details:
         body += f"\n{details}"
@@ -271,17 +231,10 @@ def image_blocks(
         message: dict[str, Any],
 ) -> list[dict[str, Any]]:
 
-    blocks: list[
-        dict[str, Any]
-    ] = []
+    blocks: list[dict[str, Any]] = []
 
-    for file in message.get(
-            "files",
-            [],
-    ):
-        upload_id = file.get(
-            "_notion_upload_id"
-        )
+    for file in message.get("files", []):
+        upload_id = file.get("_notion_upload_id")
 
         if not upload_id:
             continue
@@ -301,9 +254,7 @@ def image_blocks(
                     "file_upload": {
                         "id": upload_id
                     },
-                    "caption": rich_text(
-                        filename
-                    ),
+                    "caption": rich_text(filename),
                 },
             }
         )
@@ -313,22 +264,14 @@ def image_blocks(
 
 def archive_blocks(
         channel: dict[str, Any],
-        messages: list[
-            dict[str, Any]
-        ],
+        messages: list[dict[str, Any]],
         users: dict[str, str],
         window: MonthWindow,
         workspace_url: str,
 ) -> list[dict[str, Any]]:
 
     message_count = sum(
-        1
-        + len(
-            message.get(
-                "_replies",
-                [],
-            )
-        )
+        1 + len(message.get("_replies", []))
         for message in messages
     )
 
@@ -337,9 +280,7 @@ def archive_blocks(
         window.start.month,
     )[1]
 
-    blocks: list[
-        dict[str, Any]
-    ] = [
+    blocks: list[dict[str, Any]] = [
         {
             "object": "block",
             "type": "callout",
@@ -352,8 +293,7 @@ def archive_blocks(
                     f"기간: {window.label}-01 "
                     f"~ {window.label}-{last_day:02d}"
                     f" · 채널 ID: {channel['id']}"
-                    f" · 메시지/답글: "
-                    f"{message_count}개"
+                    f" · 메시지/답글: {message_count}개"
                 ),
             },
         }
@@ -374,10 +314,8 @@ def archive_blocks(
                     "object": "block",
                     "type": "heading_2",
                     "heading_2": {
-                        "rich_text": (
-                            rich_text(
-                                f"{date:%Y-%m-%d}"
-                            )
+                        "rich_text": rich_text(
+                            f"{date:%Y-%m-%d}"
                         )
                     },
                 }
@@ -392,9 +330,7 @@ def archive_blocks(
             )
         )
 
-        blocks.extend(
-            image_blocks(message)
-        )
+        blocks.extend(image_blocks(message))
 
         for reply_message in message.get(
                 "_replies",
@@ -411,9 +347,7 @@ def archive_blocks(
             )
 
             blocks.extend(
-                image_blocks(
-                    reply_message
-                )
+                image_blocks(reply_message)
             )
 
     if not messages:
@@ -434,9 +368,7 @@ def archive_blocks(
 
 def markdown_preview(
         channel: dict[str, Any],
-        messages: list[
-            dict[str, Any]
-        ],
+        messages: list[dict[str, Any]],
         users: dict[str, str],
         window: MonthWindow,
         workspace_url: str,
@@ -471,20 +403,12 @@ def markdown_preview(
             message["ts"]
         )
 
-        if (
-                sent_at.date()
-                != current_date
-        ):
-            current_date = (
-                sent_at.date()
-            )
+        if sent_at.date() != current_date:
+            current_date = sent_at.date()
 
             lines.extend(
                 [
-                    (
-                        f"## "
-                        f"{current_date:%Y-%m-%d}"
-                    ),
+                    f"## {current_date:%Y-%m-%d}",
                     "",
                 ]
             )
@@ -493,8 +417,7 @@ def markdown_preview(
             (message, ""),
             *[
                 (reply, "  ↳ ")
-                for reply
-                in message.get(
+                for reply in message.get(
                     "_replies",
                     [],
                 )
@@ -513,13 +436,9 @@ def markdown_preview(
             )
 
             text = slack_text(
-                item.get("text")
-                or "(본문 없음)",
+                item.get("text") or "(본문 없음)",
                 users,
-                ).replace(
-                "\n",
-                " ",
-            )
+                ).replace("\n", " ")
 
             line = (
                 f"- {prefix}"
@@ -528,21 +447,15 @@ def markdown_preview(
                 f" — {text}"
             )
 
-            details = message_details(
-                item
-            )
+            details = message_details(item)
 
             if details:
-                line += (
-                    f" · {details}"
-                )
+                line += f" · {details}"
 
-            permalink = (
-                message_permalink(
-                    workspace_url,
-                    channel["id"],
-                    item["ts"],
-                )
+            permalink = message_permalink(
+                workspace_url,
+                channel["id"],
+                item["ts"],
             )
 
             if permalink:
@@ -560,8 +473,4 @@ def markdown_preview(
             "이 기간에 메시지가 없습니다."
         )
 
-    return (
-            "\n".join(lines)
-            .rstrip()
-            + "\n"
-    )
+    return "\n".join(lines).rstrip() + "\n"

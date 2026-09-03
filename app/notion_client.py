@@ -6,39 +6,34 @@ import time
 
 from typing import Any
 
-from app.constants import (
-    MAX_NOTION_BLOCKS_PER_REQUEST,
-    NOTION_API,
-    NOTION_CHANNEL_PROPERTY,
-    NOTION_PART_BYTES,
-    NOTION_PERIOD_PROPERTY,
-    NOTION_SINGLE_PART_LIMIT_BYTES,
-    NOTION_STATUS_COMPLETE,
-    NOTION_STATUS_FAILED,
-    NOTION_STATUS_IN_PROGRESS,
-    NOTION_STATUS_PROPERTY,
-    NOTION_TITLE_PROPERTY,
-    NOTION_VERSION,
-)
 from app.http_client import JsonHttpClient
-from app.models import (
-    ArchiveError,
-    DownloadedFile,
-)
+from app.models import ArchiveError, DownloadedFile
+
+
+NOTION_API = "https://api.notion.com/v1"
+NOTION_VERSION = "2026-03-11"
+
+MAX_NOTION_BLOCKS_PER_REQUEST = 100
+
+NOTION_SINGLE_PART_LIMIT_BYTES = 20 * 1024 * 1024
+NOTION_PART_BYTES = 10 * 1024 * 1024
+
+NOTION_TITLE_PROPERTY = "이름"
+NOTION_CHANNEL_PROPERTY = "채널"
+NOTION_PERIOD_PROPERTY = "기간"
+NOTION_STATUS_PROPERTY = "상태"
+
+NOTION_STATUS_IN_PROGRESS = "진행 중"
+NOTION_STATUS_COMPLETE = "완료"
+NOTION_STATUS_FAILED = "실패"
 
 
 def chunked(
         items: list[Any],
         size: int,
 ):
-    for index in range(
-            0,
-            len(items),
-            size,
-    ):
-        yield items[
-            index : index + size
-        ]
+    for index in range(0, len(items), size):
+        yield items[index:index + size]
 
 
 class NotionClient:
@@ -49,39 +44,21 @@ class NotionClient:
             http: JsonHttpClient | None = None,
     ):
         self.data_source_id = data_source_id
-
-        self.http = (
-                http
-                or JsonHttpClient()
-        )
+        self.http = http or JsonHttpClient()
 
         self.headers = {
-            "Authorization": (
-                f"Bearer {token}"
-            ),
-            "Notion-Version": (
-                NOTION_VERSION
-            ),
+            "Authorization": f"Bearer {token}",
+            "Notion-Version": NOTION_VERSION,
         }
 
-    def validate_schema(
-            self,
-    ) -> dict[str, Any]:
-
+    def validate_schema(self) -> dict[str, Any]:
         result = self.http.request(
             "GET",
-            (
-                f"{NOTION_API}"
-                "/data_sources/"
-                f"{self.data_source_id}"
-            ),
+            f"{NOTION_API}/data_sources/{self.data_source_id}",
             headers=self.headers,
         )
 
-        properties = result.get(
-            "properties",
-            {},
-        )
+        properties = result.get("properties", {})
 
         expected = {
             NOTION_TITLE_PROPERTY: "title",
@@ -92,38 +69,22 @@ class NotionClient:
 
         errors = [
             f"{name}({property_type})"
-            for name, property_type
-            in expected.items()
-            if (
-                    properties.get(
-                        name,
-                        {},
-                    ).get("type")
-                    != property_type
-            )
+            for name, property_type in expected.items()
+            if properties.get(name, {}).get("type") != property_type
         ]
 
         if errors:
             raise ArchiveError(
-                "Notion DB에 다음 속성이 "
-                "필요합니다: "
+                "Notion DB에 다음 속성이 필요합니다: "
                 + ", ".join(errors)
             )
 
         status_options = {
             option.get("name")
             for option in (
-                properties[
-                    NOTION_STATUS_PROPERTY
-                ]
-                .get(
-                    "status",
-                    {},
-                )
-                .get(
-                    "options",
-                    [],
-                )
+                properties[NOTION_STATUS_PROPERTY]
+                .get("status", {})
+                .get("options", [])
             )
         }
 
@@ -134,8 +95,7 @@ class NotionClient:
         }
 
         missing_statuses = sorted(
-            required_statuses
-            - status_options
+            required_statuses - status_options
         )
 
         if missing_statuses:
@@ -143,9 +103,7 @@ class NotionClient:
                 "Notion DB의 "
                 f"{NOTION_STATUS_PROPERTY} "
                 "속성에 다음 옵션을 추가하세요: "
-                + ", ".join(
-                    missing_statuses
-                )
+                + ", ".join(missing_statuses)
             )
 
         return properties
@@ -158,34 +116,18 @@ class NotionClient:
     ) -> dict[str, list[str]]:
 
         requested = {
-            NOTION_CHANNEL_PROPERTY: (
-                channel_labels
-            ),
-            NOTION_PERIOD_PROPERTY: {
-                period
-            },
+            NOTION_CHANNEL_PROPERTY: channel_labels,
+            NOTION_PERIOD_PROPERTY: {period},
         }
 
         updates: dict[str, Any] = {}
         added: dict[str, list[str]] = {}
 
-        for (
-                property_name,
-                values,
-        ) in requested.items():
-
+        for property_name, values in requested.items():
             existing = (
-                properties[
-                    property_name
-                ]
-                .get(
-                    "select",
-                    {},
-                )
-                .get(
-                    "options",
-                    [],
-                )
+                properties[property_name]
+                .get("select", {})
+                .get("options", [])
             )
 
             existing_names = {
@@ -194,9 +136,7 @@ class NotionClient:
                 if option.get("name")
             }
 
-            missing = sorted(
-                values - existing_names
-            )
+            missing = sorted(values - existing_names)
 
             if not missing:
                 continue
@@ -205,50 +145,32 @@ class NotionClient:
                 (
                     {"id": option["id"]}
                     if option.get("id")
-                    else {
-                        "name": (
-                            option["name"]
-                        )
-                    }
+                    else {"name": option["name"]}
                 )
                 for option in existing
-                if (
-                        option.get("id")
-                        or option.get("name")
-                )
+                if option.get("id") or option.get("name")
             ]
 
-            updates[
-                property_name
-            ] = {
+            updates[property_name] = {
                 "select": {
                     "options": (
                             preserved
                             + [
                                 {"name": value}
-                                for value
-                                in missing
+                                for value in missing
                             ]
                     )
                 }
             }
 
-            added[
-                property_name
-            ] = missing
+            added[property_name] = missing
 
         if updates:
             self.http.request(
                 "PATCH",
-                (
-                    f"{NOTION_API}"
-                    "/data_sources/"
-                    f"{self.data_source_id}"
-                ),
+                f"{NOTION_API}/data_sources/{self.data_source_id}",
                 headers=self.headers,
-                body={
-                    "properties": updates
-                },
+                body={"properties": updates},
             )
 
         return added
@@ -261,34 +183,21 @@ class NotionClient:
 
         result = self.http.request(
             "POST",
-            (
-                f"{NOTION_API}"
-                "/data_sources/"
-                f"{self.data_source_id}"
-                "/query"
-            ),
+            f"{NOTION_API}/data_sources/{self.data_source_id}/query",
             headers=self.headers,
             body={
                 "filter": {
                     "and": [
                         {
-                            "property": (
-                                NOTION_CHANNEL_PROPERTY
-                            ),
+                            "property": NOTION_CHANNEL_PROPERTY,
                             "select": {
-                                "equals": (
-                                    channel_label
-                                )
+                                "equals": channel_label
                             },
                         },
                         {
-                            "property": (
-                                NOTION_PERIOD_PROPERTY
-                            ),
+                            "property": NOTION_PERIOD_PROPERTY,
                             "select": {
-                                "equals": (
-                                    period
-                                )
+                                "equals": period
                             },
                         },
                     ]
@@ -300,15 +209,8 @@ class NotionClient:
         return next(
             (
                 page
-                for page
-                in result.get(
-                "results",
-                [],
-            )
-                if not page.get(
-                "in_trash",
-                False,
-            )
+                for page in result.get("results", [])
+                if not page.get("in_trash", False)
             ),
             None,
         )
@@ -326,8 +228,7 @@ class NotionClient:
         number_of_parts = max(
             1,
             math.ceil(
-                downloaded.size
-                / NOTION_PART_BYTES
+                downloaded.size / NOTION_PART_BYTES
             ),
         )
 
@@ -337,18 +238,12 @@ class NotionClient:
                 if multi_part
                 else "single_part"
             ),
-            "filename": (
-                downloaded.filename
-            ),
-            "content_type": (
-                downloaded.content_type
-            ),
+            "filename": downloaded.filename,
+            "content_type": downloaded.content_type,
         }
 
         if multi_part:
-            create_body[
-                "number_of_parts"
-            ] = number_of_parts
+            create_body["number_of_parts"] = number_of_parts
 
         upload = self.http.request(
             "POST",
@@ -367,18 +262,10 @@ class NotionClient:
 
         upload_url = (
                 upload.get("upload_url")
-                or (
-                    f"{NOTION_API}"
-                    "/file_uploads/"
-                    f"{upload_id}/send"
-                )
+                or f"{NOTION_API}/file_uploads/{upload_id}/send"
         )
 
-        with open(
-                downloaded.path,
-                "rb",
-        ) as source:
-
+        with open(downloaded.path, "rb") as source:
             for part_number in range(
                     1,
                     number_of_parts + 1,
@@ -386,39 +273,26 @@ class NotionClient:
                 content = source.read(
                     NOTION_PART_BYTES
                     if multi_part
-                    else (
-                            downloaded.size
-                            + 1
-                    )
+                    else downloaded.size + 1
                 )
 
-                if (
-                        not content
-                        and downloaded.size
-                ):
+                if not content and downloaded.size:
                     raise ArchiveError(
                         "Notion 업로드 전 이미지 "
-                        "파일을 끝까지 읽지 "
-                        "못했습니다."
+                        "파일을 끝까지 읽지 못했습니다."
                     )
 
-                part_result = (
-                    self.http.multipart(
-                        upload_url,
-                        headers=self.headers,
-                        content=content,
-                        filename=(
-                            downloaded.filename
-                        ),
-                        content_type=(
-                            downloaded.content_type
-                        ),
-                        part_number=(
-                            part_number
-                            if multi_part
-                            else None
-                        ),
-                    )
+                part_result = self.http.multipart(
+                    upload_url,
+                    headers=self.headers,
+                    content=content,
+                    filename=downloaded.filename,
+                    content_type=downloaded.content_type,
+                    part_number=(
+                        part_number
+                        if multi_part
+                        else None
+                    ),
                 )
 
                 if not multi_part:
@@ -430,21 +304,16 @@ class NotionClient:
             upload = self.http.request(
                 "POST",
                 (
-                        upload.get(
-                            "complete_url"
-                        )
+                        upload.get("complete_url")
                         or (
-                            f"{NOTION_API}"
-                            "/file_uploads/"
+                            f"{NOTION_API}/file_uploads/"
                             f"{upload_id}/complete"
                         )
                 ),
                 headers=self.headers,
             )
 
-        if upload.get(
-                "status"
-        ) != "uploaded":
+        if upload.get("status") != "uploaded":
             raise ArchiveError(
                 "Notion 이미지 업로드 상태가 "
                 "예상과 다릅니다: "
@@ -479,9 +348,7 @@ class NotionClient:
             title: str,
             channel_label: str,
             period: str,
-            blocks: list[
-                dict[str, Any]
-            ],
+            blocks: list[dict[str, Any]],
     ) -> dict[str, Any]:
 
         existing = self.exact_entry(
@@ -492,9 +359,7 @@ class NotionClient:
         if existing:
             return {
                 "status": "skipped",
-                "url": existing.get(
-                    "url"
-                ),
+                "url": existing.get("url"),
                 "id": existing["id"],
             }
 
@@ -504,12 +369,8 @@ class NotionClient:
             headers=self.headers,
             body={
                 "parent": {
-                    "type": (
-                        "data_source_id"
-                    ),
-                    "data_source_id": (
-                        self.data_source_id
-                    ),
+                    "type": "data_source_id",
+                    "data_source_id": self.data_source_id,
                 },
                 "properties": {
                     NOTION_TITLE_PROPERTY: {
@@ -524,9 +385,7 @@ class NotionClient:
                     },
                     NOTION_CHANNEL_PROPERTY: {
                         "select": {
-                            "name": (
-                                channel_label
-                            )
+                            "name": channel_label
                         }
                     },
                     NOTION_PERIOD_PROPERTY: {
@@ -536,9 +395,7 @@ class NotionClient:
                     },
                     NOTION_STATUS_PROPERTY: {
                         "status": {
-                            "name": (
-                                NOTION_STATUS_IN_PROGRESS
-                            )
+                            "name": NOTION_STATUS_IN_PROGRESS
                         }
                     },
                 },
@@ -561,14 +418,11 @@ class NotionClient:
                 self.http.request(
                     "PATCH",
                     (
-                        f"{NOTION_API}"
-                        f"/blocks/{page_id}"
-                        "/children"
+                        f"{NOTION_API}/blocks/"
+                        f"{page_id}/children"
                     ),
                     headers=self.headers,
-                    body={
-                        "children": batch
-                    },
+                    body={"children": batch},
                 )
 
                 time.sleep(0.35)
@@ -579,9 +433,7 @@ class NotionClient:
             )
 
         except Exception:
-            with contextlib.suppress(
-                    Exception
-            ):
+            with contextlib.suppress(Exception):
                 self.update_status(
                     page_id,
                     NOTION_STATUS_FAILED,

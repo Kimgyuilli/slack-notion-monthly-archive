@@ -69,7 +69,6 @@ class JsonHttpClient:
                         timeout=self.timeout,
                 ) as response:
                     raw = response.read().decode("utf-8")
-
                     return json.loads(raw) if raw else {}
 
             except HTTPError as error:
@@ -122,22 +121,15 @@ class JsonHttpClient:
     ) -> dict[str, Any]:
 
         boundary = f"----slack-notion-{uuid.uuid4().hex}"
-
         body = bytearray()
 
         if part_number is not None:
-            body.extend(
-                f"--{boundary}\r\n".encode()
-            )
-
+            body.extend(f"--{boundary}\r\n".encode())
             body.extend(
                 b'Content-Disposition: form-data; '
                 b'name="part_number"\r\n\r\n'
             )
-
-            body.extend(
-                f"{part_number}\r\n".encode()
-            )
+            body.extend(f"{part_number}\r\n".encode())
 
         ascii_filename = (
                 re.sub(
@@ -148,9 +140,7 @@ class JsonHttpClient:
                 or "upload.bin"
         )
 
-        body.extend(
-            f"--{boundary}\r\n".encode()
-        )
+        body.extend(f"--{boundary}\r\n".encode())
 
         body.extend(
             (
@@ -164,10 +154,7 @@ class JsonHttpClient:
         )
 
         body.extend(content)
-
-        body.extend(
-            f"\r\n--{boundary}--\r\n".encode()
-        )
+        body.extend(f"\r\n--{boundary}--\r\n".encode())
 
         request_headers = {
             "Accept": "application/json",
@@ -190,9 +177,7 @@ class JsonHttpClient:
                         request,
                         timeout=max(self.timeout, 120),
                 ) as response:
-
                     raw = response.read().decode("utf-8")
-
                     return json.loads(raw) if raw else {}
 
             except HTTPError as error:
@@ -202,9 +187,7 @@ class JsonHttpClient:
                 )
 
                 if retryable and attempt < self.retries:
-                    retry_after = error.headers.get(
-                        "Retry-After"
-                    )
+                    retry_after = error.headers.get("Retry-After")
 
                     wait = (
                         float(retry_after)

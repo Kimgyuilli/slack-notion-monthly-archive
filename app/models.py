@@ -6,8 +6,10 @@ import re
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from app.constants import KST
+
+KST = ZoneInfo("Asia/Seoul")
 
 
 class ArchiveError(RuntimeError):
