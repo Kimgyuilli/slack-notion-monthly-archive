@@ -37,7 +37,10 @@ jobs:
   archive:
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Slack needs one conversations.replies call per thread, so an active
+    # workspace is bound by Slack's tier budget, not by our own work. 350 is
+    # just under the 360-minute ceiling for GitHub-hosted jobs.
+    timeout-minutes: 350
     env:
       ARCHIVE_MONTH: ${{ inputs.month || '' }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

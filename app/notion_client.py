@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import math
 import time
-from typing import Any
+from typing import Any, Iterable
 
 from app.http_client import JsonHttpClient
 from app.models import (
@@ -18,13 +19,17 @@ from app.models import (
     NOTION_TITLE_PROPERTY,
     ArchiveError,
     DownloadedFile,
-    chunked,
 )
 
 
 NOTION_API = "https://api.notion.com/v1"
 NOTION_VERSION = "2026-03-11"
 MAX_NOTION_BLOCKS_PER_REQUEST = 100
+# Notion caps an append at 100 children *and* 500KB of JSON. 100 blocks of
+# ordinary chat clears both, but 100 long Korean messages do not: UTF-8 spends
+# three bytes a character, so ~2,000-character posts already push a full batch
+# past 500KB. Leave headroom for the envelope rather than sitting on the limit.
+MAX_NOTION_REQUEST_BYTES = 400 * 1024
 NOTION_SINGLE_PART_LIMIT_BYTES = 20 * 1024 * 1024
 NOTION_PART_BYTES = 10 * 1024 * 1024
 
@@ -158,6 +163,16 @@ class NotionClient:
             None,
         )
 
+    @staticmethod
+    def entry_status(page: dict[str, Any]) -> str:
+        """Read a row's 상태, or "" when Notion did not return the property."""
+        status = (
+            page.get("properties", {})
+            .get(NOTION_STATUS_PROPERTY, {})
+            .get("status")
+        )
+        return (status or {}).get("name") or ""
+
     def upload_file(self, downloaded: DownloadedFile) -> str:
         """Upload a local file to Notion, using multi-part mode above 20 MiB."""
         multi_part = downloaded.size > NOTION_SINGLE_PART_LIMIT_BYTES
@@ -209,6 +224,27 @@ class NotionClient:
             raise ArchiveError(f"Notion 이미지 업로드 상태가 예상과 다릅니다: {upload.get('status')}")
         return upload_id
 
+    @staticmethod
+    def _batched(blocks: list[dict[str, Any]]) -> Iterable[list[dict[str, Any]]]:
+        """Split blocks so each append stays under both Notion request limits.
+
+        A single block always ships, even if oversized on its own: Slack caps a
+        message at 40,000 characters, so one block cannot reach 500KB.
+        """
+        batch: list[dict[str, Any]] = []
+        batch_bytes = 0
+        for block in blocks:
+            size = len(json.dumps(block, ensure_ascii=False).encode("utf-8"))
+            over_bytes = batch and batch_bytes + size > MAX_NOTION_REQUEST_BYTES
+            over_count = len(batch) >= MAX_NOTION_BLOCKS_PER_REQUEST
+            if over_bytes or over_count:
+                yield batch
+                batch, batch_bytes = [], 0
+            batch.append(block)
+            batch_bytes += size
+        if batch:
+            yield batch
+
     def update_status(self, page_id: str, status: str) -> None:
         self.http.request(
             "PATCH",
@@ -253,7 +289,7 @@ class NotionClient:
         if not page_id:
             raise ArchiveError("Notion이 생성된 DB 페이지 ID를 반환하지 않았습니다.")
         try:
-            for batch in chunked(blocks, MAX_NOTION_BLOCKS_PER_REQUEST):
+            for batch in self._batched(blocks):
                 self.http.request(
                     "PATCH",
                     f"{NOTION_API}/blocks/{page_id}/children",

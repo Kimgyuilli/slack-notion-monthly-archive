@@ -9,7 +9,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Iterable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 
@@ -75,7 +75,3 @@ def month_window(value: str | None, now: datetime | None = None) -> MonthWindow:
     start = datetime(year, month, 1, tzinfo=KST)
     end = datetime(year + month // 12, month % 12 + 1, 1, tzinfo=KST)
     return MonthWindow(f"{year:04d}-{month:02d}", start, end)
-
-def chunked(items: list[Any], size: int) -> Iterable[list[Any]]:
-    for index in range(0, len(items), size):
-        yield items[index : index + size]

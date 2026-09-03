@@ -16,6 +16,13 @@ from app.models import ArchiveError, DownloadedFile, MonthWindow
 
 
 SLACK_API = "https://slack.com/api"
+# Internal (non-distributed) apps may page 1000 objects per call, so use it:
+# every doubling of the page size is one fewer request against the same tier
+# budget. Apps distributed outside the Marketplace are capped at 15 objects
+# regardless of what is asked for, and simply return short pages.
+SLACK_PAGE_LIMIT = 1000
+# users.list is documented as unreliable above a few hundred entries.
+SLACK_USERS_PAGE_LIMIT = 200
 
 
 def safe_filename(value: str) -> str:
@@ -121,7 +128,9 @@ class SlackClient:
         cursor = ""
         names: dict[str, str] = {}
         while True:
-            result = self.call("users.list", limit=200, cursor=cursor)
+            result = self.call(
+                "users.list", limit=SLACK_USERS_PAGE_LIMIT, cursor=cursor
+            )
             for user in result.get("members", []):
                 profile = user.get("profile", {})
                 names[user["id"]] = (
@@ -147,7 +156,7 @@ class SlackClient:
                 "conversations.list",
                 types="public_channel,private_channel",
                 exclude_archived="true",
-                limit=200,
+                limit=SLACK_PAGE_LIMIT,
                 cursor=cursor,
             )
             for channel in result.get("channels", []):
@@ -175,7 +184,7 @@ class SlackClient:
                 oldest=window.oldest,
                 latest=window.latest,
                 inclusive="true",
-                limit=200,
+                limit=SLACK_PAGE_LIMIT,
                 cursor=cursor,
             )
             roots.extend(
@@ -209,7 +218,7 @@ class SlackClient:
                 oldest=window.oldest,
                 latest=window.latest,
                 inclusive="true",
-                limit=200,
+                limit=SLACK_PAGE_LIMIT,
                 cursor=cursor,
             )
             for message in result.get("messages", []):

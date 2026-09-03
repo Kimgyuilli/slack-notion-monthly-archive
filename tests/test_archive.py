@@ -1,5 +1,6 @@
 import email.message
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -160,9 +161,44 @@ class ArchiveTests(unittest.TestCase):
         self.assertIn("https://demo.slack.com/archives/C01PRODUCT/", preview)
         self.assertIn("채널=#product · 기간=2026-08 · 상태=완료", preview)
 
-    def test_chunked_never_exceeds_notion_limit(self):
-        batches = list(models.chunked(list(range(251)), 100))
+    def test_batching_never_exceeds_notion_block_count(self):
+        blocks = [
+            {"object": "block", "type": "paragraph",
+             "paragraph": {"rich_text": renderer.rich_text("짧은 글")}}
+            for _ in range(251)
+        ]
+        batches = list(notion_client.NotionClient._batched(blocks))
         self.assertEqual([len(batch) for batch in batches], [100, 100, 51])
+
+    def test_batching_splits_before_the_500kb_request_limit(self):
+        """100 long Korean posts blow the byte limit long before the count one."""
+        blocks = [
+            {"object": "block", "type": "paragraph",
+             "paragraph": {"rich_text": renderer.rich_text("가" * 2000)}}
+            for _ in range(100)
+        ]
+        batches = list(notion_client.NotionClient._batched(blocks))
+        sizes = [
+            len(json.dumps({"children": b}, ensure_ascii=False).encode("utf-8"))
+            for b in batches
+        ]
+        self.assertTrue(all(size < 500 * 1024 for size in sizes), sizes)
+        self.assertGreater(len(batches), 1)
+        self.assertEqual(sum(len(b) for b in batches), 100)
+
+    def test_batching_still_emits_a_block_that_alone_exceeds_the_budget(self):
+        """Slack caps a message well below this, but the batcher must not stall."""
+        huge = {"object": "block", "type": "paragraph",
+                "paragraph": {"rich_text": renderer.rich_text("나" * 200_000)}}
+        batches = list(notion_client.NotionClient._batched([huge, huge]))
+        self.assertEqual([len(batch) for batch in batches], [1, 1])
+
+    def test_a_real_slack_message_never_fills_a_batch_on_its_own(self):
+        """40,000 chars is Slack's own ceiling; one such block must stay small."""
+        block = {"object": "block", "type": "paragraph",
+                 "paragraph": {"rich_text": renderer.rich_text("나" * 40_000)}}
+        size = len(json.dumps(block, ensure_ascii=False).encode("utf-8"))
+        self.assertLess(size, notion_client.MAX_NOTION_REQUEST_BYTES)
 
     def test_long_text_is_split(self):
         pieces = renderer.rich_text("가" * 4001)
@@ -622,6 +658,104 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(downloaded.size, 2048)
         self.assertEqual(downloaded.content_type, "image/webp")
         self.assertEqual(downloaded.filename, "a.png")
+
+
+class UnfinishedRowTests(unittest.TestCase):
+    """A row left mid-write must never be reported as an existing archive."""
+
+    def row(self, status):
+        page = {"id": "PAGE", "url": "https://notion.example/PAGE"}
+        if status is not None:
+            page["properties"] = {"상태": {"status": {"name": status}}}
+        return page
+
+    def test_entry_status_reads_the_property_defensively(self):
+        read = notion_client.NotionClient.entry_status
+        self.assertEqual(read(self.row("완료")), "완료")
+        self.assertEqual(read(self.row("진행 중")), "진행 중")
+        self.assertEqual(read(self.row(None)), "")
+        self.assertEqual(read({"properties": {"상태": {"status": None}}}), "")
+
+    def run_publish(self, status):
+        test = self
+
+        class FakeSlack:
+            def __init__(self, token):
+                pass
+
+            def auth_test(self):
+                return {"url": "https://demo.slack.com"}
+
+            def users(self):
+                return {}
+
+            def member_channels(self, *, auto_join_public=False):
+                return [{"id": "C1", "name": "general"}]
+
+            def channel_messages(self, channel_id, window):
+                return []
+
+        class FakeNotion:
+            entry_status = staticmethod(notion_client.NotionClient.entry_status)
+
+            def __init__(self, token, data_source_id):
+                self.created = []
+
+            def validate_schema(self):
+                return {}
+
+            def ensure_select_options(self, properties, labels, period):
+                return {}
+
+            def exact_entry(self, label, period):
+                return test.row(status)
+
+            def create_archive_entry(self, title, label, period, blocks):
+                self.created.append(title)
+                return {"status": "created", "url": "https://notion.example/NEW"}
+
+        env = {
+            "SLACK_BOT_TOKEN": "xoxb-test",
+            "NOTION_TOKEN": "ntn-test",
+            "NOTION_DATA_SOURCE_ID": "DS",
+        }
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.dict(os.environ, env, clear=False),
+            mock.patch.object(archive, "SlackClient", FakeSlack),
+            mock.patch.object(archive, "NotionClient", FakeNotion),
+            mock.patch("sys.stdout", stdout),
+            mock.patch("sys.stderr", stderr),
+        ):
+            code = archive.run(archive.parse_args(["--publish", "--month", "2026-08"]))
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_completed_row_is_skipped_quietly_and_exits_zero(self):
+        code, out, err = self.run_publish("완료")
+        self.assertEqual(code, 0)
+        self.assertIn("skipped", out)
+        self.assertIn("건너뜀 1개", out)
+        self.assertNotIn("미완료", out)
+        self.assertEqual(err, "")
+
+    def test_in_progress_row_is_flagged_and_exits_nonzero(self):
+        code, out, err = self.run_publish("진행 중")
+        self.assertEqual(code, 1)
+        self.assertIn("미완료", out)
+        self.assertIn("미완료 행 1개", out)
+        self.assertIn("휴지통", err)
+        self.assertNotIn("skipped", out)
+
+    def test_failed_row_is_flagged_too(self):
+        code, out, err = self.run_publish("실패")
+        self.assertEqual(code, 1)
+        self.assertIn("실패", out)
+        self.assertIn("휴지통", err)
+
+    def test_row_without_a_readable_status_is_flagged(self):
+        code, out, err = self.run_publish(None)
+        self.assertEqual(code, 1)
+        self.assertIn("알 수 없음", out)
 
 
 if __name__ == "__main__":
