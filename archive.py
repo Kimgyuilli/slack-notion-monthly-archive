@@ -21,7 +21,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -64,6 +64,9 @@ class MonthWindow:
     def latest(self) -> str:
         return f"{self.end.timestamp():.6f}"
 
+    def contains(self, timestamp: str) -> bool:
+        return self.start.timestamp() <= float(timestamp) < self.end.timestamp()
+
 
 @dataclass(frozen=True)
 class DownloadedFile:
@@ -92,11 +95,16 @@ def month_window(value: str | None, now: datetime | None = None) -> MonthWindow:
         year, month = previous_day.year, previous_day.month
 
     start = datetime(year, month, 1, tzinfo=KST)
-    if month == 12:
-        end = datetime(year + 1, 1, 1, tzinfo=KST)
-    else:
-        end = datetime(year, month + 1, 1, tzinfo=KST)
+    end = datetime(year + month // 12, month % 12 + 1, 1, tzinfo=KST)
     return MonthWindow(f"{year:04d}-{month:02d}", start, end)
+
+
+def retry_delay(retry_after: str | None, attempt: int) -> float:
+    """Honour a numeric Retry-After header, else back off exponentially to 16s."""
+    if retry_after:
+        with contextlib.suppress(ValueError):
+            return float(retry_after)
+    return min(2**attempt, 16)
 
 
 class JsonHttpClient:
@@ -120,26 +128,38 @@ class JsonHttpClient:
         if payload is not None:
             request_headers["Content-Type"] = "application/json"
 
+        return self._send(
+            lambda: Request(url, data=payload, headers=request_headers, method=method),
+            timeout=self.timeout,
+        )
+
+    def _send(
+        self,
+        build_request: Callable[[], Request],
+        *,
+        timeout: int,
+        error_prefix: str = "",
+    ) -> dict[str, Any]:
+        """Send one request, retrying 429/5xx and network failures."""
         for attempt in range(self.retries + 1):
-            request = Request(url, data=payload, headers=request_headers, method=method)
             try:
-                with urlopen(request, timeout=self.timeout) as response:
+                with urlopen(build_request(), timeout=timeout) as response:
                     raw = response.read().decode("utf-8")
                     return json.loads(raw) if raw else {}
             except HTTPError as error:
                 retryable = error.code == 429 or 500 <= error.code < 600
                 if retryable and attempt < self.retries:
-                    retry_after = error.headers.get("Retry-After")
-                    wait = float(retry_after) if retry_after else min(2**attempt, 16)
-                    time.sleep(wait)
+                    time.sleep(retry_delay(error.headers.get("Retry-After"), attempt))
                     continue
                 detail = error.read().decode("utf-8", errors="replace")
-                raise ArchiveError(f"HTTP {error.code} 응답: {detail[:500]}") from error
+                raise ArchiveError(
+                    f"{error_prefix}HTTP {error.code} 응답: {detail[:500]}"
+                ) from error
             except URLError as error:
                 if attempt < self.retries:
-                    time.sleep(min(2**attempt, 16))
+                    time.sleep(retry_delay(None, attempt))
                     continue
-                raise ArchiveError(f"네트워크 요청 실패: {error.reason}") from error
+                raise ArchiveError(f"{error_prefix}네트워크 요청 실패: {error.reason}") from error
         raise AssertionError("unreachable")
 
     def multipart(
@@ -173,27 +193,11 @@ class JsonHttpClient:
             **headers,
         }
 
-        for attempt in range(self.retries + 1):
-            request = Request(url, data=bytes(body), headers=request_headers, method="POST")
-            try:
-                with urlopen(request, timeout=max(self.timeout, 120)) as response:
-                    raw = response.read().decode("utf-8")
-                    return json.loads(raw) if raw else {}
-            except HTTPError as error:
-                retryable = error.code == 429 or 500 <= error.code < 600
-                if retryable and attempt < self.retries:
-                    retry_after = error.headers.get("Retry-After")
-                    wait = float(retry_after) if retry_after else min(2**attempt, 16)
-                    time.sleep(wait)
-                    continue
-                detail = error.read().decode("utf-8", errors="replace")
-                raise ArchiveError(f"파일 업로드 HTTP {error.code} 응답: {detail[:500]}") from error
-            except URLError as error:
-                if attempt < self.retries:
-                    time.sleep(min(2**attempt, 16))
-                    continue
-                raise ArchiveError(f"파일 업로드 네트워크 실패: {error.reason}") from error
-        raise AssertionError("unreachable")
+        return self._send(
+            lambda: Request(url, data=bytes(body), headers=request_headers, method="POST"),
+            timeout=max(self.timeout, 120),
+            error_prefix="파일 업로드 ",
+        )
 
 
 class SlackClient:
@@ -265,7 +269,7 @@ class SlackClient:
                 )
                 if retryable and attempt < self.http.retries:
                     retry_after = error.headers.get("Retry-After") if isinstance(error, HTTPError) else None
-                    time.sleep(float(retry_after) if retry_after else min(2**attempt, 16))
+                    time.sleep(retry_delay(retry_after, attempt))
                     continue
                 if isinstance(error, HTTPError):
                     raise ArchiveError(f"Slack 이미지 다운로드 실패: HTTP {error.code}") from error
@@ -342,7 +346,7 @@ class SlackClient:
             roots.extend(
                 message
                 for message in result.get("messages", [])
-                if window.start.timestamp() <= float(message["ts"]) < window.end.timestamp()
+                if window.contains(message["ts"])
             )
             cursor = result.get("response_metadata", {}).get("next_cursor", "")
             if not cursor:
@@ -374,8 +378,7 @@ class SlackClient:
                 cursor=cursor,
             )
             for message in result.get("messages", []):
-                timestamp = float(message["ts"])
-                if message["ts"] != root_ts and window.start.timestamp() <= timestamp < window.end.timestamp():
+                if message["ts"] != root_ts and window.contains(message["ts"]):
                     replies.append(message)
             cursor = result.get("response_metadata", {}).get("next_cursor", "")
             if not cursor:
@@ -514,7 +517,9 @@ class NotionClient:
     def upload_file(self, downloaded: DownloadedFile) -> str:
         """Upload a local file to Notion, using multi-part mode above 20 MiB."""
         multi_part = downloaded.size > NOTION_SINGLE_PART_LIMIT_BYTES
-        number_of_parts = max(1, math.ceil(downloaded.size / NOTION_PART_BYTES))
+        number_of_parts = (
+            max(1, math.ceil(downloaded.size / NOTION_PART_BYTES)) if multi_part else 1
+        )
         create_body: dict[str, Any] = {
             "mode": "multi_part" if multi_part else "single_part",
             "filename": downloaded.filename,
@@ -579,10 +584,6 @@ class NotionClient:
         period: str,
         blocks: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        existing = self.exact_entry(channel_label, period)
-        if existing:
-            return {"status": "skipped", "url": existing.get("url"), "id": existing["id"]}
-
         page = self.http.request(
             "POST",
             f"{NOTION_API}/pages",
@@ -622,6 +623,14 @@ class NotionClient:
                 self.update_status(page_id, NOTION_STATUS_FAILED)
             raise
         return {"status": "created", "url": page.get("url"), "id": page_id}
+
+
+def channel_label(channel: dict[str, Any]) -> str:
+    return f"#{channel.get('name', channel['id'])}"
+
+
+def entry_title(window: MonthWindow, label: str) -> str:
+    return f"Slack · {window.label} · {label}"
 
 
 def safe_filename(value: str) -> str:
@@ -842,10 +851,10 @@ def markdown_preview(
     window: MonthWindow,
     workspace_url: str,
 ) -> str:
-    channel_label = f"#{channel.get('name', channel['id'])}"
-    title = f"Slack · {window.label} · {channel_label}"
+    label = channel_label(channel)
+    title = entry_title(window, label)
     lines = [
-        f"[Notion DB] 이름={title} · 채널={channel_label} · 기간={window.label} · 상태={NOTION_STATUS_COMPLETE}",
+        f"[Notion DB] 이름={title} · 채널={label} · 기간={window.label} · 상태={NOTION_STATUS_COMPLETE}",
         "",
         f"# {title}",
         "",
@@ -943,6 +952,8 @@ def environment_flag(name: str, default: bool = False) -> bool:
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.mock and args.publish:
+        raise ArchiveError("--mock과 --publish는 함께 사용할 수 없습니다.")
     window = month_window(args.month or os.getenv("ARCHIVE_MONTH"))
     workspace_url = os.getenv("SLACK_WORKSPACE_URL", "")
     slack: SlackClient | None = None
@@ -961,26 +972,20 @@ def run(args: argparse.Namespace) -> int:
         users = slack.users()
         auto_join_public = environment_flag("AUTO_JOIN_PUBLIC_CHANNELS")
         channels = []
-        for channel in slack.member_channels(
-            auto_join_public=auto_join_public,
-        ):
+        for channel in slack.member_channels(auto_join_public=auto_join_public):
             channel = dict(channel)
             channel["messages"] = slack.channel_messages(channel["id"], window)
             channels.append(channel)
 
-    previews: list[str] = []
-    for channel in channels:
-        previews.append(
-            markdown_preview(channel, channel["messages"], users, window, workspace_url)
-        )
-
     if not args.publish:
+        previews = [
+            markdown_preview(channel, channel["messages"], users, window, workspace_url)
+            for channel in channels
+        ]
         print("\n---\n\n".join(previews))
         print(f"\n[미리보기] {len(channels)}개 채널. Notion에는 쓰지 않았습니다.", file=sys.stderr)
         return 0
 
-    if args.mock:
-        raise ArchiveError("--mock과 --publish는 함께 사용할 수 없습니다.")
     notion_token = os.getenv("NOTION_TOKEN")
     notion_data_source = os.getenv("NOTION_DATA_SOURCE_ID")
     if not notion_token or not notion_data_source:
@@ -989,12 +994,9 @@ def run(args: argparse.Namespace) -> int:
     notion = NotionClient(notion_token, notion_data_source)
     properties = notion.validate_schema()
     if channels:
-        channel_labels = {
-            f"#{channel.get('name', channel['id'])}" for channel in channels
-        }
         added_labels = notion.ensure_select_options(
             properties,
-            channel_labels,
+            {channel_label(channel) for channel in channels},
             window.label,
         )
         for property_name, values in added_labels.items():
@@ -1013,9 +1015,9 @@ def run(args: argparse.Namespace) -> int:
     max_image_bytes = max_image_mb * 1024 * 1024
     created = skipped = 0
     for channel in channels:
-        channel_label = f"#{channel.get('name', channel['id'])}"
-        title = f"Slack · {window.label} · {channel_label}"
-        existing = notion.exact_entry(channel_label, window.label)
+        label = channel_label(channel)
+        title = entry_title(window, label)
+        existing = notion.exact_entry(label, window.label)
         if existing:
             skipped += 1
             print(f"skipped  {title}  {existing.get('url') or existing['id']}")
@@ -1029,17 +1031,9 @@ def run(args: argparse.Namespace) -> int:
         blocks = archive_blocks(
             channel, channel["messages"], users, window, workspace_url
         )
-        result = notion.create_archive_entry(
-            title,
-            channel_label,
-            window.label,
-            blocks,
-        )
-        if result["status"] == "created":
-            created += 1
-        else:
-            skipped += 1
-        print(f"{result['status']:>7}  {title}  {result.get('url') or result['id']}")
+        result = notion.create_archive_entry(title, label, window.label, blocks)
+        created += 1
+        print(f"created  {title}  {result.get('url') or result['id']}")
     print(f"완료: 생성 {created}개, 기존 페이지 건너뜀 {skipped}개")
     return 0
 

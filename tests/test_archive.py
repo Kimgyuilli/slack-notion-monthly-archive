@@ -363,6 +363,31 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(fake.parts, [(None, b"small-image")])
         self.assertEqual(fake.requests[0][2]["mode"], "single_part")
 
+    def test_notion_uses_single_part_between_part_size_and_limit(self):
+        """A 10-20 MiB image is one single_part upload, not two reads."""
+        with tempfile.NamedTemporaryFile(delete=False) as temp:
+            temp.write(b"x" * 15)
+            path = temp.name
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        fake = FakeUploadHttp()
+        notion = archive.NotionClient("token", "parent", http=fake)
+        downloaded = archive.DownloadedFile(path, "medium.png", "image/png", 15)
+        with (
+            mock.patch.object(archive, "NOTION_SINGLE_PART_LIMIT_BYTES", 20),
+            mock.patch.object(archive, "NOTION_PART_BYTES", 10),
+            mock.patch.object(archive.time, "sleep"),
+        ):
+            upload_id = notion.upload_file(downloaded)
+        self.assertEqual(upload_id, "UPLOAD_ID")
+        self.assertEqual(fake.parts, [(None, b"x" * 15)])
+        self.assertEqual(fake.requests[0][2]["mode"], "single_part")
+        self.assertNotIn("number_of_parts", fake.requests[0][2])
+
+    def test_retry_delay_prefers_numeric_retry_after(self):
+        self.assertEqual(archive.retry_delay("2.5", 0), 2.5)
+        self.assertEqual(archive.retry_delay("Wed, 21 Oct 2026 07:28:00 GMT", 3), 8)
+        self.assertEqual(archive.retry_delay(None, 9), 16)
+
     def test_notion_uses_numbered_parts_for_large_image(self):
         with tempfile.NamedTemporaryFile(delete=False) as temp:
             temp.write(b"x" * 25)
