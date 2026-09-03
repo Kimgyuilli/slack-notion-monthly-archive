@@ -44,7 +44,7 @@ python3 archive.py --mock --month 2026-08
 python3 -m unittest discover -s tests -v
 ```
 
-Mock 모드는 Notion에 데이터를 쓰거나 이미지를 다운로드하지 않습니다.
+Mock 모드는 Notion에 데이터를 쓰거나 이미지를 다운로드하지 않으므로 `--mock`과 `--publish`는 함께 사용할 수 없습니다.
 
 ## 설치
 
@@ -110,7 +110,6 @@ Repository secrets:
 |---|---|---|
 | `SLACK_BOT_TOKEN` | 예 | Slack Bot User OAuth Token |
 | `NOTION_TOKEN` | 예 | Notion 내부 연결 토큰 |
-| `AUTO_JOIN_PUBLIC_CHANNELS` | 아니요 | `false`가 기본값이며, `true`면 모든 공개 채널에 자동 참여 |
 
 Repository variables:
 
@@ -119,6 +118,7 @@ Repository variables:
 | `NOTION_DATA_SOURCE_ID` | 예 | 아카이브 DB의 데이터 소스 ID |
 | `SLACK_WORKSPACE_URL` | 권장 | `https://workspace.slack.com` 형식. 원문 링크 생성에 사용 |
 | `MAX_IMAGE_MB` | 아니요 | 이미지 하나의 최대 크기. 기본값 `200`, 허용 범위 `1`~`5120` |
+| `AUTO_JOIN_PUBLIC_CHANNELS` | 아니요 | `false`가 기본값이며, `true`면 모든 공개 채널에 자동 참여 |
 
 `SLACK_CHANNELS` 같은 채널 목록 변수는 사용하지 않습니다.
 
@@ -126,7 +126,7 @@ Repository variables:
 
 ### 자동 실행
 
-[archive.yml](.github/workflows/archive.yml)은 매월 1일 00:17 KST에 실행되어 지난달 메시지를 아카이빙합니다.
+[archive.yml](.github/workflows/archive.yml)은 매월 1일 00:17 UTC(= 09:17 KST)에 실행되어 지난달 메시지를 아카이빙합니다. GitHub Actions의 cron은 UTC만 지원하므로 워크플로에는 UTC 기준 시각을 적습니다.
 
 ### GitHub에서 수동 실행
 
@@ -167,9 +167,12 @@ python3 archive.py --month 2026-08 --publish
 
 # KST 기준 지난달을 Notion에 저장
 python3 archive.py --publish
+
+# 이미지 크기 한도를 50MB로 낮춰서 저장
+python3 archive.py --month 2026-08 --publish --max-image-mb 50
 ```
 
-`--publish`가 없으면 Notion에는 아무것도 쓰지 않습니다.
+`--publish`가 없으면 Notion에는 아무것도 쓰지 않습니다. `--max-image-mb`는 `MAX_IMAGE_MB` 환경 변수보다 우선하며, 이미지를 내려받지 않는 미리보기에서는 사용하지 않습니다.
 
 ## 저장 범위
 

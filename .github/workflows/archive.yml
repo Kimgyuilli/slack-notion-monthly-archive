@@ -2,8 +2,8 @@ name: Archive Slack to Notion
 
 on:
   schedule:
+    # GitHub Actions cron is UTC only: 00:17 UTC on the 1st = 09:17 KST.
     - cron: "17 0 1 * *"
-      timezone: "Asia/Seoul"
   workflow_dispatch:
     inputs:
       month:
@@ -25,7 +25,7 @@ jobs:
     env:
       ARCHIVE_MONTH: ${{ inputs.month || '' }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-      AUTO_JOIN_PUBLIC_CHANNELS: ${{ secrets.AUTO_JOIN_PUBLIC_CHANNELS }}
+      AUTO_JOIN_PUBLIC_CHANNELS: ${{ vars.AUTO_JOIN_PUBLIC_CHANNELS }}
       SLACK_WORKSPACE_URL: ${{ vars.SLACK_WORKSPACE_URL }}
       MAX_IMAGE_MB: ${{ vars.MAX_IMAGE_MB || '200' }}
       NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
@@ -37,5 +37,5 @@ jobs:
           python-version: "3.12"
       - name: Run tests
         run: python -m unittest discover -s tests -v
-      - name: Archive the previous month
+      - name: Archive the target month
         run: python archive.py --publish
