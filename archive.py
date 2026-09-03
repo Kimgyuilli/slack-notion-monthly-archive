@@ -14,7 +14,13 @@ import sys
 from datetime import datetime
 from typing import Any, Iterable
 
-from app.models import KST, ArchiveError, MonthWindow, month_window
+from app.models import (
+    KST,
+    NOTION_STATUS_COMPLETE,
+    ArchiveError,
+    MonthWindow,
+    month_window,
+)
 from app.notion_client import NotionClient
 from app.renderer import archive_blocks, channel_label, entry_title, markdown_preview
 from app.slack_client import SlackClient
@@ -186,14 +192,31 @@ def run(args: argparse.Namespace) -> int:
     if max_image_mb <= 0 or max_image_mb > 5120:
         raise ArchiveError("MAX_IMAGE_MB는 1부터 5120 사이여야 합니다.")
     max_image_bytes = max_image_mb * 1024 * 1024
-    created = skipped = 0
+    created = skipped = unfinished = 0
     for channel in channels:
         label = channel_label(channel)
         title = entry_title(window, label)
         existing = notion.exact_entry(label, window.label)
         if existing:
-            skipped += 1
-            print(f"skipped  {title}  {existing.get('url') or existing['id']}")
+            where = existing.get("url") or existing["id"]
+            status = notion.entry_status(existing)
+            if status == NOTION_STATUS_COMPLETE:
+                skipped += 1
+                print(f"skipped  {title}  {where}")
+                continue
+            # The row exists but was never finished: a run that died mid-append
+            # leaves 진행 중 behind, and 실패 is set when the append itself
+            # raised. Either way the body is partial, and because the duplicate
+            # check matches on 채널 + 기간 alone, re-running can only skip it
+            # forever. Say so loudly instead of reporting it as done.
+            unfinished += 1
+            print(f"미완료   {title}  {where}  (상태: {status or '알 수 없음'})")
+            print(
+                f"경고: {title} 행이 '{status or '알 수 없음'}' 상태로 남아 있어"
+                " 본문이 불완전할 수 있습니다. 해당 행을 휴지통으로 옮긴 뒤"
+                " 다시 실행하세요.",
+                file=sys.stderr,
+            )
             continue
         assert slack is not None
         uploaded, failed = upload_message_images(
@@ -207,8 +230,11 @@ def run(args: argparse.Namespace) -> int:
         result = notion.create_archive_entry(title, label, window.label, blocks)
         created += 1
         print(f"created  {title}  {result.get('url') or result['id']}")
-    print(f"완료: 생성 {created}개, 기존 페이지 건너뜀 {skipped}개")
-    return 0
+    summary = f"완료: 생성 {created}개, 기존 페이지 건너뜀 {skipped}개"
+    if unfinished:
+        summary += f", 미완료 행 {unfinished}개"
+    print(summary)
+    return 1 if unfinished else 0
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
