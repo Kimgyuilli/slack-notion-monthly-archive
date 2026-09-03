@@ -65,10 +65,20 @@ class FakeSlackHttp:
 
 
 class FakeNotionDatabaseHttp:
-    def __init__(self, *, include_status=True, existing=None, fail_blocks=False):
+    def __init__(
+        self,
+        *,
+        include_status=True,
+        existing=None,
+        fail_blocks=False,
+        channel_options=None,
+        period_options=None,
+    ):
         self.include_status = include_status
         self.existing = existing
         self.fail_blocks = fail_blocks
+        self.channel_options = channel_options or []
+        self.period_options = period_options or []
         self.requests = []
 
     def request(self, method, url, **kwargs):
@@ -77,8 +87,14 @@ class FakeNotionDatabaseHttp:
         if method == "GET" and url.endswith("/data_sources/DATA_SOURCE"):
             properties = {
                 "이름": {"type": "title", "title": {}},
-                "채널": {"type": "select", "select": {"options": []}},
-                "기간": {"type": "select", "select": {"options": []}},
+                "채널": {
+                    "type": "select",
+                    "select": {"options": self.channel_options},
+                },
+                "기간": {
+                    "type": "select",
+                    "select": {"options": self.period_options},
+                },
             }
             if self.include_status:
                 properties["상태"] = {
@@ -96,6 +112,8 @@ class FakeNotionDatabaseHttp:
             return {"results": [self.existing] if self.existing else []}
         if method == "POST" and url.endswith("/pages"):
             return {"id": "PAGE_ID", "url": "https://notion.example/PAGE_ID"}
+        if method == "PATCH" and url.endswith("/data_sources/DATA_SOURCE"):
+            return {"id": "DATA_SOURCE"}
         if method == "PATCH" and "/blocks/" in url:
             if self.fail_blocks:
                 raise archive.ArchiveError("block append failed")
@@ -202,6 +220,48 @@ class ArchiveTests(unittest.TestCase):
                 {"property": "채널", "select": {"equals": "#product"}},
                 {"property": "기간", "select": {"equals": "2026-08"}},
             ],
+        )
+
+    def test_notion_adds_missing_channel_and_period_labels(self):
+        fake = FakeNotionDatabaseHttp(
+            channel_options=[{"id": "CHANNEL_PRODUCT", "name": "#product"}],
+            period_options=[{"id": "PERIOD_AUGUST", "name": "2026-08"}],
+        )
+        notion = archive.NotionClient("token", "DATA_SOURCE", http=fake)
+        properties = notion.validate_schema()
+        added = notion.ensure_select_options(
+            properties,
+            {"#product", "#archive-test"},
+            "2026-09",
+        )
+        self.assertEqual(
+            added,
+            {"채널": ["#archive-test"], "기간": ["2026-09"]},
+        )
+        update = fake.requests[-1][2]["properties"]
+        self.assertEqual(
+            update["채널"]["select"]["options"],
+            [{"id": "CHANNEL_PRODUCT"}, {"name": "#archive-test"}],
+        )
+        self.assertEqual(
+            update["기간"]["select"]["options"],
+            [{"id": "PERIOD_AUGUST"}, {"name": "2026-09"}],
+        )
+
+    def test_notion_does_not_update_existing_labels(self):
+        fake = FakeNotionDatabaseHttp(
+            channel_options=[{"id": "CHANNEL_PRODUCT", "name": "#product"}],
+            period_options=[{"id": "PERIOD_AUGUST", "name": "2026-08"}],
+        )
+        notion = archive.NotionClient("token", "DATA_SOURCE", http=fake)
+        properties = notion.validate_schema()
+        added = notion.ensure_select_options(properties, {"#product"}, "2026-08")
+        self.assertEqual(added, {})
+        self.assertFalse(
+            any(
+                method == "PATCH" and url.endswith("/data_sources/DATA_SOURCE")
+                for method, url, _ in fake.requests
+            )
         )
 
     def test_notion_database_entry_sets_labels_and_status(self):

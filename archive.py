@@ -398,7 +398,7 @@ class NotionClient:
             "Notion-Version": NOTION_VERSION,
         }
 
-    def validate_schema(self) -> None:
+    def validate_schema(self) -> dict[str, Any]:
         result = self.http.request(
             "GET",
             f"{NOTION_API}/data_sources/{self.data_source_id}",
@@ -438,6 +438,55 @@ class NotionClient:
                 f"Notion DB의 {NOTION_STATUS_PROPERTY} 속성에 다음 옵션을 추가하세요: "
                 + ", ".join(missing_statuses)
             )
+        return properties
+
+    def ensure_select_options(
+        self,
+        properties: dict[str, Any],
+        channel_labels: set[str],
+        period: str,
+    ) -> dict[str, list[str]]:
+        """Create missing channel/period labels without removing existing options."""
+        requested = {
+            NOTION_CHANNEL_PROPERTY: channel_labels,
+            NOTION_PERIOD_PROPERTY: {period},
+        }
+        updates: dict[str, Any] = {}
+        added: dict[str, list[str]] = {}
+        for property_name, values in requested.items():
+            existing = (
+                properties[property_name]
+                .get("select", {})
+                .get("options", [])
+            )
+            existing_names = {
+                option.get("name") for option in existing if option.get("name")
+            }
+            missing = sorted(values - existing_names)
+            if not missing:
+                continue
+            preserved = [
+                {"id": option["id"]}
+                if option.get("id")
+                else {"name": option["name"]}
+                for option in existing
+                if option.get("id") or option.get("name")
+            ]
+            updates[property_name] = {
+                "select": {
+                    "options": preserved + [{"name": value} for value in missing]
+                }
+            }
+            added[property_name] = missing
+
+        if updates:
+            self.http.request(
+                "PATCH",
+                f"{NOTION_API}/data_sources/{self.data_source_id}",
+                headers=self.headers,
+                body={"properties": updates},
+            )
+        return added
 
     def exact_entry(self, channel_label: str, period: str) -> dict[str, Any] | None:
         result = self.http.request(
@@ -956,7 +1005,18 @@ def run(args: argparse.Namespace) -> int:
         raise ArchiveError("게시하려면 NOTION_TOKEN과 NOTION_DATA_SOURCE_ID가 필요합니다.")
 
     notion = NotionClient(notion_token, notion_data_source)
-    notion.validate_schema()
+    properties = notion.validate_schema()
+    if channels:
+        channel_labels = {
+            f"#{channel.get('name', channel['id'])}" for channel in channels
+        }
+        added_labels = notion.ensure_select_options(
+            properties,
+            channel_labels,
+            window.label,
+        )
+        for property_name, values in added_labels.items():
+            print(f"labels   {property_name}: {', '.join(values)}")
     try:
         configured_max = (
             args.max_image_mb
