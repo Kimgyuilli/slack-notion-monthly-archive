@@ -136,6 +136,17 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(window.start.isoformat(), "2026-08-01T00:00:00+09:00")
         self.assertEqual(window.end.isoformat(), "2026-09-01T00:00:00+09:00")
 
+    def test_every_scheduled_firing_day_targets_the_same_month(self):
+        """The workflow fires on the 1st, 11th and 21st as an outage backstop.
+
+        All three must resolve to the same previous month, or a retry firing
+        would archive the wrong window instead of finishing the failed one.
+        """
+        for day in (1, 11, 21):
+            with self.subTest(day=day):
+                now = datetime(2026, 9, day, 0, 17, tzinfo=timezone.utc)
+                self.assertEqual(models.month_window(None, now).label, "2026-08")
+
     def test_december_rolls_into_next_year(self):
         window = models.month_window("2026-12")
         self.assertEqual(window.end.isoformat(), "2027-01-01T00:00:00+09:00")
