@@ -2,8 +2,9 @@ name: Archive Slack to Notion
 
 on:
   schedule:
+    # TEMPORARY (cron trigger smoke test) — revert to: cron: "17 0 1 * *"
     # GitHub Actions cron is UTC only: 00:17 UTC on the 1st = 09:17 KST.
-    - cron: "17 0 1 * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       month:
@@ -55,4 +56,5 @@ jobs:
         with:
           python-version: "3.12"
       - name: Archive the target month
-        run: python archive.py --publish
+        # TEMPORARY (cron trigger smoke test) — restore the --publish flag.
+        run: python archive.py
