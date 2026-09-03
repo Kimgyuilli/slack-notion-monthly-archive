@@ -28,6 +28,12 @@ users:read
 files:read
 ```
 
+선택한 공개 채널에 자동으로 참여하게 하려면 다음 권한도 추가합니다.
+
+```text
+channels:join
+```
+
 비공개 채널도 포함하려면 다음 두 권한을 추가합니다.
 
 ```text
@@ -90,12 +96,17 @@ Repository secrets:
 - `SLACK_BOT_TOKEN`
 - `NOTION_TOKEN`
 - `NOTION_PARENT_PAGE_ID`
+- `AUTO_JOIN_PUBLIC_CHANNELS`: 선택 사항. `true`일 때만 `SLACK_CHANNELS`에 지정한 공개 채널에 자동 참여하며, 기본값은 `false`
 
 Repository variables:
 
 - `SLACK_WORKSPACE_URL`: `https://your-workspace.slack.com`
 - `SLACK_CHANNELS`: 선택 사항. `general,product,engineering` 형식이며 비어 있으면 봇이 참여한 모든 채널
 - `MAX_IMAGE_MB`: 선택 사항. 이미지 하나의 최대 다운로드 크기이며 기본값은 `200`, 최대 `5120`
+
+자동 참여를 사용하려면 `AUTO_JOIN_PUBLIC_CHANNELS` Secret을 `true`로 설정하고 `SLACK_CHANNELS` Variable에 대상 채널 이름이나 ID를 반드시 입력합니다. 채널 목록 없이 자동 참여를 켜면 모든 공개 채널에 실수로 가입하는 것을 막기 위해 실행이 중단됩니다. `channels:join` 권한을 추가한 뒤에는 Slack 앱을 워크스페이스에 다시 설치해야 합니다.
+
+`AUTO_JOIN_PUBLIC_CHANNELS=false`는 **새 채널 자동 참여만 중단**합니다. 봇이 이미 참여한 채널의 읽기 권한까지 제거하려면 해당 Slack 채널에서 앱을 별도로 제거해야 합니다.
 
 포함된 워크플로는 매월 1일 00:17 KST에 지난달을 아카이빙합니다. Actions 화면의 **Run workflow**에서 `YYYY-MM`을 입력하면 특정 월을 수동으로 실행할 수 있습니다.
 

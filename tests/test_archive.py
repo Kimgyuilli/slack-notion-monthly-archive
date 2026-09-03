@@ -33,6 +33,37 @@ class FakeUploadHttp:
         }
 
 
+class FakeSlackHttp:
+    def __init__(self):
+        self.calls = []
+
+    def request(self, method, url, **kwargs):
+        slack_method = url.rsplit("/", 1)[-1]
+        params = kwargs.get("params") or kwargs.get("body") or {}
+        self.calls.append((method, slack_method, params))
+        if slack_method == "conversations.list":
+            return {
+                "ok": True,
+                "channels": [
+                    {"id": "C_JOIN", "name": "product", "is_member": False, "is_private": False},
+                    {"id": "C_SKIP", "name": "random", "is_member": False, "is_private": False},
+                    {"id": "G_PRIVATE", "name": "leaders", "is_member": False, "is_private": True},
+                ],
+                "response_metadata": {"next_cursor": ""},
+            }
+        if slack_method == "conversations.join":
+            return {
+                "ok": True,
+                "channel": {
+                    "id": params["channel"],
+                    "name": "product",
+                    "is_member": True,
+                    "is_private": False,
+                },
+            }
+        raise AssertionError(slack_method)
+
+
 class ArchiveTests(unittest.TestCase):
     def test_defaults_to_previous_kst_month(self):
         now = datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc)
@@ -79,6 +110,30 @@ class ArchiveTests(unittest.TestCase):
             archive.safe_content_type("image/png\r\nX-Injected: yes"),
             "application/octet-stream",
         )
+
+    def test_environment_flag_is_strict(self):
+        with mock.patch.dict(os.environ, {"AUTO_JOIN_PUBLIC_CHANNELS": "true"}):
+            self.assertTrue(archive.environment_flag("AUTO_JOIN_PUBLIC_CHANNELS"))
+        with mock.patch.dict(os.environ, {"AUTO_JOIN_PUBLIC_CHANNELS": "invalid"}):
+            with self.assertRaises(archive.ArchiveError):
+                archive.environment_flag("AUTO_JOIN_PUBLIC_CHANNELS")
+
+    def test_auto_join_only_selected_public_channels(self):
+        fake = FakeSlackHttp()
+        slack = archive.SlackClient("token", http=fake)
+        channels = slack.member_channels({"product"}, auto_join_public=True)
+        self.assertEqual([channel["id"] for channel in channels], ["C_JOIN"])
+        join_calls = [
+            (http_method, params)
+            for http_method, slack_method, params in fake.calls
+            if slack_method == "conversations.join"
+        ]
+        self.assertEqual(join_calls, [("POST", {"channel": "C_JOIN"})])
+
+    def test_auto_join_requires_channel_allowlist(self):
+        slack = archive.SlackClient("token", http=FakeSlackHttp())
+        with self.assertRaises(archive.ArchiveError):
+            slack.member_channels(None, auto_join_public=True)
 
     def test_uploaded_image_becomes_notion_image_block(self):
         window = archive.month_window("2026-08")

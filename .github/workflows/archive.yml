@@ -25,6 +25,7 @@ jobs:
     env:
       ARCHIVE_MONTH: ${{ inputs.month || '' }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      AUTO_JOIN_PUBLIC_CHANNELS: ${{ secrets.AUTO_JOIN_PUBLIC_CHANNELS }}
       SLACK_WORKSPACE_URL: ${{ vars.SLACK_WORKSPACE_URL }}
       SLACK_CHANNELS: ${{ vars.SLACK_CHANNELS }}
       MAX_IMAGE_MB: ${{ vars.MAX_IMAGE_MB || '200' }}

@@ -194,12 +194,19 @@ class SlackClient:
         self.token = token
         self.http = http or JsonHttpClient()
 
-    def call(self, method: str, **params: Any) -> dict[str, Any]:
+    def call(
+        self,
+        method: str,
+        *,
+        http_method: str = "GET",
+        **params: Any,
+    ) -> dict[str, Any]:
         result = self.http.request(
-            "GET",
+            http_method,
             f"{SLACK_API}/{method}",
             headers={"Authorization": f"Bearer {self.token}"},
-            params=params,
+            params=params if http_method == "GET" else None,
+            body=params if http_method != "GET" else None,
         )
         if not result.get("ok"):
             raise ArchiveError(f"Slack API {method} 실패: {result.get('error', 'unknown_error')}")
@@ -282,7 +289,16 @@ class SlackClient:
             if not cursor:
                 return names
 
-    def member_channels(self, selected: set[str] | None = None) -> list[dict[str, Any]]:
+    def member_channels(
+        self,
+        selected: set[str] | None = None,
+        *,
+        auto_join_public: bool = False,
+    ) -> list[dict[str, Any]]:
+        if auto_join_public and not selected:
+            raise ArchiveError(
+                "AUTO_JOIN_PUBLIC_CHANNELS=true일 때는 안전을 위해 SLACK_CHANNELS를 반드시 지정해야 합니다."
+            )
         cursor = ""
         channels: list[dict[str, Any]] = []
         while True:
@@ -294,10 +310,17 @@ class SlackClient:
                 cursor=cursor,
             )
             for channel in result.get("channels", []):
-                if not channel.get("is_member"):
-                    continue
                 if selected and channel.get("id") not in selected and channel.get("name") not in selected:
                     continue
+                if not channel.get("is_member"):
+                    if not auto_join_public or channel.get("is_private"):
+                        continue
+                    joined = self.call(
+                        "conversations.join",
+                        http_method="POST",
+                        channel=channel["id"],
+                    )
+                    channel = joined.get("channel") or {**channel, "is_member": True}
                 channels.append(channel)
             cursor = result.get("response_metadata", {}).get("next_cursor", "")
             if not cursor:
@@ -786,6 +809,18 @@ def selected_channels(cli_channels: list[str] | None) -> set[str] | None:
     return cleaned or None
 
 
+def environment_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ArchiveError(f"{name}은 true 또는 false여야 합니다.")
+
+
 def run(args: argparse.Namespace) -> int:
     window = month_window(args.month or os.getenv("ARCHIVE_MONTH"))
     workspace_url = os.getenv("SLACK_WORKSPACE_URL", "")
@@ -803,8 +838,13 @@ def run(args: argparse.Namespace) -> int:
         if not workspace_url and identity.get("url"):
             workspace_url = identity["url"]
         users = slack.users()
+        selected = selected_channels(args.channel)
+        auto_join_public = environment_flag("AUTO_JOIN_PUBLIC_CHANNELS")
         channels = []
-        for channel in slack.member_channels(selected_channels(args.channel)):
+        for channel in slack.member_channels(
+            selected,
+            auto_join_public=auto_join_public,
+        ):
             channel = dict(channel)
             channel["messages"] = slack.channel_messages(channel["id"], window)
             channels.append(channel)
