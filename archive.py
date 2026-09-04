@@ -32,6 +32,23 @@ DEFAULT_MAX_IMAGE_MB = 200
 def is_image_file(file: dict[str, Any]) -> bool:
     return str(file.get("mimetype") or "").lower().startswith("image/")
 
+def resolve_messages(
+    channel: dict[str, Any], slack: SlackClient | None, window: MonthWindow
+) -> list[dict[str, Any]]:
+    """Return a channel's messages, fetching them from Slack only if needed.
+
+    Mock data arrives with messages already attached. A live run defers the
+    fetch until the Notion duplicate check says the channel actually needs
+    archiving: the workflow now runs several times a month as an outage
+    backstop, and a channel already 완료 must not re-spend Slack's per-thread
+    tier budget just to be skipped.
+    """
+    if "messages" in channel:
+        return channel["messages"]
+    assert slack is not None
+    channel["messages"] = slack.channel_messages(channel["id"], window)
+    return channel["messages"]
+
 def all_messages(messages: list[dict[str, Any]]) -> Iterable[dict[str, Any]]:
     for message in messages:
         yield message
@@ -150,15 +167,20 @@ def run(args: argparse.Namespace) -> int:
             workspace_url = identity["url"]
         users = slack.users()
         auto_join_public = environment_flag("AUTO_JOIN_PUBLIC_CHANNELS")
-        channels = []
-        for channel in slack.member_channels(auto_join_public=auto_join_public):
-            channel = dict(channel)
-            channel["messages"] = slack.channel_messages(channel["id"], window)
-            channels.append(channel)
+        channels = [
+            dict(channel)
+            for channel in slack.member_channels(auto_join_public=auto_join_public)
+        ]
 
     if not args.publish:
         previews = [
-            markdown_preview(channel, channel["messages"], users, window, workspace_url)
+            markdown_preview(
+                channel,
+                resolve_messages(channel, slack, window),
+                users,
+                window,
+                workspace_url,
+            )
             for channel in channels
         ]
         print("\n---\n\n".join(previews))
@@ -192,7 +214,7 @@ def run(args: argparse.Namespace) -> int:
     if max_image_mb <= 0 or max_image_mb > 5120:
         raise ArchiveError("MAX_IMAGE_MB는 1부터 5120 사이여야 합니다.")
     max_image_bytes = max_image_mb * 1024 * 1024
-    created = skipped = unfinished = 0
+    created = skipped = recovered = 0
     for channel in channels:
         label = channel_label(channel)
         title = entry_title(window, label)
@@ -207,34 +229,28 @@ def run(args: argparse.Namespace) -> int:
             # The row exists but was never finished: a run that died mid-append
             # leaves 진행 중 behind, and 실패 is set when the append itself
             # raised. Either way the body is partial, and because the duplicate
-            # check matches on 채널 + 기간 alone, re-running can only skip it
-            # forever. Say so loudly instead of reporting it as done.
-            unfinished += 1
-            print(f"미완료   {title}  {where}  (상태: {status or '알 수 없음'})")
-            print(
-                f"경고: {title} 행이 '{status or '알 수 없음'}' 상태로 남아 있어"
-                " 본문이 불완전할 수 있습니다. 해당 행을 휴지통으로 옮긴 뒤"
-                " 다시 실행하세요.",
-                file=sys.stderr,
-            )
-            continue
+            # check matches on 채널 + 기간 alone, leaving the row in place would
+            # skip this channel forever. Trash it and fall through to rebuild —
+            # otherwise no amount of retrying could ever repair the month.
+            print(f"복구     {title}  {where}  (이전 상태: {status or '알 수 없음'})")
+            notion.archive_page(existing["id"])
+            recovered += 1
+        messages = resolve_messages(channel, slack, window)
         assert slack is not None
         uploaded, failed = upload_message_images(
-            channel["messages"], slack, notion, max_image_bytes
+            messages, slack, notion, max_image_bytes
         )
         if uploaded or failed:
             print(f"images   {title}  업로드 {uploaded}개, 실패 {failed}개")
-        blocks = archive_blocks(
-            channel, channel["messages"], users, window, workspace_url
-        )
+        blocks = archive_blocks(channel, messages, users, window, workspace_url)
         result = notion.create_archive_entry(title, label, window.label, blocks)
         created += 1
         print(f"created  {title}  {result.get('url') or result['id']}")
     summary = f"완료: 생성 {created}개, 기존 페이지 건너뜀 {skipped}개"
-    if unfinished:
-        summary += f", 미완료 행 {unfinished}개"
+    if recovered:
+        summary += f", 미완료 행 복구 {recovered}개"
     print(summary)
-    return 1 if unfinished else 0
+    return 0
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
